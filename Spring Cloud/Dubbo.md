@@ -840,3 +840,165 @@ Dubbo的服务暴露开始于Spring容器刷新的时候，ServiceBean调用expo
 
 第三步 ：RegistryProtocol接着将服务记录到ProviderConsumerRegTable，然后会去注册中心去注册服务。
 
+
+
+## 服务引用过程
+
+服务引用过程大致就是，调用者去注册中心获取提供者的列表，然后封装成一个个invoker代理类，通过这个代理类去和提供者交互。
+
+服务引用的入口是 ：`RenferenceBean#afterPropertiesSet()`
+
+`RenferenceBean`类继承了ReferenceConfig，实现了 `FactoryBean`，并重写了`FactoryBean#getObject()`，则`getObject`方法里调用了父类的`RenerfenceConfig#get()`。
+
+`Dubbo`有两种加载方式 ：懒汉式和饿汉式。
+
+默认为懒汉式，懒汉式是用到才会触发加载，这里是用了`FactoryBean#getObject`去加载的。
+
+```java
+@Override
+public Object getObject() {
+    // 懒汉式，用到时才调用RenerfenceConfig#get()加载
+    return get();
+}
+
+@Override
+@SuppressWarnings({"unchecked"})
+public void afterPropertiesSet() throws Exception {
+    //省略一大块代码
+    
+    // 饿汉式，直接去调用getObject加载    
+    if (shouldInit()) {
+        getObject();
+    }
+}
+```
+
+> 复习一下Spring的BeanFactory和FactoryBean ：
+>
+> BeanFactory是IOC容器，FactoryBean是Bean，是归BeanFactory管的。
+>
+> FactoryBean接口可以用来对Bean进行封装，当真正要获取这个Bean时，会调用FactoryBean#getObject()，可以在这个方法中进行一些封装操作。
+
+
+
+父类的`RenferenceConfgi#get()`会调用`init`操作。
+
+上源码 ：
+
+```java
+private void init() {
+    if (initialized) {
+        return;
+    }
+    checkStubAndLocal(interfaceClass);
+    checkMock(interfaceClass);
+    // 省略拼接map的操作
+
+    // 重点来了 ： 创建代理
+    ref = createProxy(map);
+
+    String serviceKey = URL.buildKey(interfaceName, group, version);
+    ApplicationModel.initConsumerModel(serviceKey, buildConsumerModel(serviceKey, attributes));
+    initialized = true;
+}
+```
+
+
+
+
+
+```java
+private T createProxy(Map<String, String> map) {
+    // 先判断是不是本地服务
+    if (shouldJvmRefer(map)) {
+        // 如果是本地服务就去暴露服务的Protocol的exporterMap中取出invoker了
+        URL url = new URL(LOCAL_PROTOCOL, LOCALHOST_VALUE, 0, interfaceClass.getName()).addParameters(map);
+        invoker = REF_PROTOCOL.refer(interfaceClass, url);
+        
+    } else {
+        urls.clear(); // reference retry init will add url to urls, lead to OOM
+        // 配置了url，要么是点对点，要么是注册中心
+        if (url != null && url.length() > 0) { // user specified URL, could be peer-to-peer address, or register center's address.
+            String[] us = SEMICOLON_SPLIT_PATTERN.split(url);
+            if (us != null && us.length > 0) {
+                for (String u : us) {
+                   	// 删除循环处理放入容器的代码
+                }
+            }
+        } else { // assemble URL from register center's configuration
+            // if protocols not injvm checkRegistry
+            // 配置了注册中心
+            if (!LOCAL_PROTOCOL.equalsIgnoreCase(getProtocol())){
+                checkRegistry();
+                // 加载注册中心
+                List<URL> us = loadRegistries(false);
+                if (CollectionUtils.isNotEmpty(us)) {
+                    for (URL u : us) {
+                        // 拼接URL，并放入urls
+                    }
+                }
+                if (urls.isEmpty()) {
+                    throw new IllegalStateException();
+                }
+            }
+        }
+
+        if (urls.size() == 1) {
+            // 如果只有一个URL，直接获取invoker了
+            invoker = REF_PROTOCOL.refer(interfaceClass, urls.get(0));
+        } else {
+            List<Invoker<?>> invokers = new ArrayList<Invoker<?>>();
+            URL registryURL = null;
+            // 多个url 转换为 invoker
+            for (URL url : urls) {
+                invokers.add(REF_PROTOCOL.refer(interfaceClass, url));
+                if (REGISTRY_PROTOCOL.equals(url.getProtocol())) {
+                    registryURL = url; // use last registry url
+                }
+            }
+            if (registryURL != null) { // registry url is available
+                // use RegistryAwareCluster only when register's CLUSTER is available
+                URL u = registryURL.addParameter(CLUSTER_KEY, RegistryAwareCluster.NAME);
+                // The invoker wrap relation would be: RegistryAwareClusterInvoker(StaticDirectory) -> FailoverClusterInvoker(RegistryDirectory, will execute route) -> Invoker
+                // 多个invoker合并，只暴露出一个invoker
+                invoker = CLUSTER.join(new StaticDirectory(u, invokers));
+            } else { // not a registry url, must be direct invoke.
+                invoker = CLUSTER.join(new StaticDirectory(invokers));
+            }
+        }
+    }
+
+    // 省略部分代码
+    // create service proxy
+    // 通过invoker获取代理
+    return (T) PROXY_FACTORY.getProxy(invoker);
+}
+```
+
+
+
+**总结**
+
+大致的流程是，先检查配置，构建一个URL，通过URL自适应扩展调用protocol.refer得到相应的invoker。如果有多个invoker，就合并为一个invoker以供调用。然后再通过invoker获取代理，这个代理就是被调用的对象。
+
+
+
+
+
+## 服务调用过程
+
+**服务引用猜想**
+
+服务引用的过程，大致是从注册中心获取服务的URL，生成本地的invoker代理对象，当调用具体的方法时，使用从本地的服务列表中通过负载均衡算法选出一个服务提供者进行调用，使用Netty将参数传给provider。
+
+
+
+**约定协议**
+
+RPC框架生产者和消费者交互要有一个固定的应用层协议，常见自定义的应用层协议通常有三种玩法：
+
+- 固定长度 ：会有一些浪费，长度定的太短不够用，太长又浪费
+- 特殊字符隔断 ：比较自由
+- header + body ：头部固定长度，并且头部会写明body的长度，body长度不固定，这样就很方便了
+
+dubbo就是属于header + body
