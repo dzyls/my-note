@@ -221,5 +221,287 @@ public static final int CONTROL_BEHAVIOR_WARM_UP_RATE_LIMITER = 3;
 
 
 
-## Sentinel降级
+## Sentinel接入Spring Boot
+
+Sentinel接入Spring Boot很简单，引入starter-alibaba-sentinel依赖即可。
+
+```java
+<dependency>
+    <groupId>com.alibaba.cloud</groupId>
+    <artifactId>spring-cloud-starter-alibaba-sentinel</artifactId>
+    <version>${parent.version}</version>
+</dependency>
+```
+
+Sentinel-starter默认给所有HTTP接口提供埋点，所以不用修改代码就可以实现限流。
+
+如果想要自定义 ，使用`@SentinelResource`注解 ：
+
+```java
+@RestController
+public class HelloController {
+
+    @SentinelResource(value = "hello",blockHandler = "helloBlock",fallback = "fallBack")
+    @GetMapping("hello")
+    public String hello() throws Exception {
+        //throw new Exception("hello");
+        return "hello";
+    }
+
+    public String helloBlock(){
+        System.err.println("block");
+        return "block";
+    }
+
+    public String fallBack(){
+        System.err.println("fallBack");
+        return "fallBack";
+    }
+
+}
+```
+
+还可以在代码中使用`SphU.entry`来手动获取资源。
+
+
+
+**利用SPI机制初始化流控规则**
+
+1. 实现InitFunc接口
+
+   ```java
+   public class SentinelFlowConfig implements InitFunc {
+   
+       private static final Logger LOGGER = LoggerFactory.getLogger(SentinelFlowConfig.class);
+   
+       @Override
+       public void init() throws Exception {
+           ArrayList<FlowRule> rules = new ArrayList<>();
+           FlowRule rule = new FlowRule();
+           rule.setResource("hello");
+           rule.setCount(1d);
+           rule.setGrade(RuleConstant.FLOW_GRADE_QPS);
+           rules.add(rule);
+           FlowRuleManager.loadRules(rules);
+           LOGGER.info("init flow rules...");
+       }
+   
+   }
+   ```
+
+2. 在resource/META-INF/services新建一个文件`com.alibaba.csp.sentinel.init.InitFunc`，文件内容是InitFunc的实现类的全限定路径 ：
+
+      ```properties
+      com.example.sentinel.config.SentinelFlowConfig
+      ```
+
+这样就可以利用SPI机制来加载流控规则。
+
+
+
+*通过SPI机制还是比较麻烦的，可以利用Spring的容器刷新事件来加载流控规则。*
+
+
+
+**自定义URL限流异常**
+
+默认情况下，没有指定降级方法或降级类时，触发限流会返回`Blocked By Sentinel`。
+
+如果需要在触发限流统一返回一个JSON，可以实现`UrlBlockHandler`。
+
+还可以指定返回的页面，就需要配置 ：
+
+`spring.cloud.sentinel.servet.block-page={url}`
+
+
+
+**URL资源清洗**
+
+sentinel默认是把URL当成资源来做限流，如果是路径中有变量比如`/get/{id}`那么就会每一种URL都会当成不同的资源。
+
+这样限流就会有问题，就需要 ：
+
+实现UrlCleaner接口的clean方法 ：
+
+```java
+@Service
+public class SentinelUrlCleaner implements UrlCleaner {
+
+    @Override
+    public String clean(String url) {
+        if (StringUtils.isEmpty(url)) {
+            return url;
+        }
+        if (url.startsWith("/get")){
+            return "/get/*";
+        }
+        return url;
+    }
+}
+```
+
+
+
+## 动态流控
+
+基于Sentinel Dashboard配置的流控规则，都是保存在内存中的，应用重启即丢失。
+
+解决这个问题，可以使用Sentinel的动态数据源支持，Sentinel支持多种数据源 ：nacos、zookeeper、consul、Redis等。
+
+使用动态数据源很简单，引入`sentinel-datasource-nacos`，然后在配置文件中添加`spring.cloud.sentinel.datasource.nacos`的配置即可。
+
+但是这样会有一个问题 ：
+
+> Nacos修改配置可以自动同步到sentinel dashboard上，
+>
+> 但sentinel dashboard修改了配置，是**无法同步**到Nacos。
+
+针对这个问题，有两个解决方案：
+
+- 不使用sentinel dashboard。
+
+- 或者修改sentinel dashboard源码实现从Nacos拉取配置同步到Sentinel Dashboard。
+
+
+
+## 热点限流
+
+Sentinel通过LRU算法和滑动窗口来实现热点参数的统计，Sentinel会根据请求参数来判断哪些是热点参数，然后通过热点参数限流规则，将超出阈值的限流。
+
+使用也很简单，引入`sentinel-paramter-flow-control`依赖，通过`ParamFlowRuleManager`加载规则，然后根据`SphU.entry`传入需要限流的参数即可。也可以使用`@SentinelReource`，会自动根据方法参数列表来统计和限流。
+
+
+
+## 底层原理
+
+Sentinel底层有许多Slot，比如
+
+- NodeSelectorSlot
+- ClusterBuilderSlot
+- StatisticSlot
+- LogSlot
+- SystemSlot
+- FlowSlot
+- DegradeSlot
+
+等等，这些Slot构成一个责任链，每个槽负责一个功能，这样职责分明。
+
+
+
+## 工作原理
+
+`spring-cloud-alibaba-sentinel`的`spring.factories`文件内容如下 ：
+
+```java
+org.springframework.boot.autoconfigure.EnableAutoConfiguration=\
+com.alibaba.cloud.sentinel.SentinelWebAutoConfiguration,\
+com.alibaba.cloud.sentinel.SentinelWebFluxAutoConfiguration,\
+com.alibaba.cloud.sentinel.endpoint.SentinelEndpointAutoConfiguration,\
+com.alibaba.cloud.sentinel.custom.SentinelAutoConfiguration,\
+com.alibaba.cloud.sentinel.feign.SentinelFeignAutoConfiguration
+
+org.springframework.cloud.client.circuitbreaker.EnableCircuitBreaker=\
+com.alibaba.cloud.sentinel.custom.SentinelCircuitBreakerConfiguration
+```
+
+- SentinelWebAutoConfiguration是对web的支持
+- SentinelWebFluxAutoConfiguration是对webFlux的支持
+
+查看SentinelWebAutoConfiguration的代码 ：
+
+```java
+@Bean
+@ConditionalOnProperty(name = "spring.cloud.sentinel.filter.enabled", matchIfMissing = true)
+public FilterRegistrationBean sentinelFilter() {
+   FilterRegistrationBean<Filter> registration = new FilterRegistrationBean<>();
+
+   SentinelProperties.Filter filterConfig = properties.getFilter();
+
+   if (filterConfig.getUrlPatterns() == null
+         || filterConfig.getUrlPatterns().isEmpty()) {
+      List<String> defaultPatterns = new ArrayList<>();
+      defaultPatterns.add("/*");
+      filterConfig.setUrlPatterns(defaultPatterns);
+   }
+
+   // 添加一个CommonFilter
+   registration.addUrlPatterns(filterConfig.getUrlPatterns().toArray(new String[0]));
+   Filter filter = new CommonFilter();
+   registration.setFilter(filter);
+   registration.setOrder(filterConfig.getOrder());
+   registration.addInitParameter("HTTP_METHOD_SPECIFY",
+         String.valueOf(properties.getHttpMethodSpecify()));
+   log.info(
+         "[Sentinel Starter] register Sentinel CommonFilter with urlPatterns: {}.",
+         filterConfig.getUrlPatterns());
+   return registration;
+
+}
+```
+
+上述代码就做了一件事，注册一个CommonFilter，默认拦截所有请求，所有请求都要走到`CommonFilter#doFilter`。
+
+
+
+```java
+@Override
+public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain)
+        throws IOException, ServletException {
+    HttpServletRequest sRequest = (HttpServletRequest) request;
+    Entry urlEntry = null;
+
+    try {
+        String target = FilterUtil.filterTarget(sRequest);
+        // Clean and unify the URL.
+        // For REST APIs, you have to clean the URL (e.g. `/foo/1` and `/foo/2` -> `/foo/:id`), or
+        // the amount of context and resources will exceed the threshold.
+        // URL清洗
+        UrlCleaner urlCleaner = WebCallbackManager.getUrlCleaner();
+        if (urlCleaner != null) {
+            target = urlCleaner.clean(target);
+        }
+
+        // If you intend to exclude some URLs, you can convert the URLs to the empty string ""
+        // in the UrlCleaner implementation.
+        if (!StringUtil.isEmpty(target)) {
+            // Parse the request origin using registered origin parser.
+            String origin = parseOrigin(sRequest);
+            String contextName = webContextUnify ? WebServletConfig.WEB_SERVLET_CONTEXT_NAME : target;
+            ContextUtil.enter(contextName, origin);
+
+            if (httpMethodSpecify) {
+                // Add HTTP method prefix if necessary.
+                String pathWithHttpMethod = sRequest.getMethod().toUpperCase() + COLON + target;
+                // 通过SphU.entry来请求资源
+                urlEntry = SphU.entry(pathWithHttpMethod, ResourceTypeConstants.COMMON_WEB, EntryType.IN);
+            } else {
+                urlEntry = SphU.entry(target, ResourceTypeConstants.COMMON_WEB, EntryType.IN);
+            }
+        }
+        chain.doFilter(request, response);
+    } catch (BlockException e) {
+        HttpServletResponse sResponse = (HttpServletResponse) response;
+        // Return the block page, or redirect to another URL.
+        WebCallbackManager.getUrlBlockHandler().blocked(sRequest, sResponse, e);
+    } catch (IOException | ServletException | RuntimeException e2) {
+        Tracer.traceEntry(e2, urlEntry);
+        throw e2;
+    } finally {
+        if (urlEntry != null) {
+            urlEntry.exit();
+        }
+        ContextUtil.exit();
+    }
+}
+```
+
+`CommonFilter#doFilter`也很简单 ：
+
+1. 获取URL
+2. 判断是否存在UrlCleaner，如果存在则清洗URL
+3. 请求资源
+
+
+
+## 源码解析
 
