@@ -503,5 +503,338 @@ public void doFilter(ServletRequest request, ServletResponse response, FilterCha
 
 
 
-## 源码解析
+## 限流源码解析
 
+Sentinel源码分为几个模块，其中最重要的是`sentinel-core`，这个名字一看就知道是核心源码。
+
+从`SphU#entry`方法入手开始分析 ：
+
+```java
+public static Entry entry(String name) throws BlockException {
+    return Env.sph.entry(name, EntryType.OUT, 1, OBJECTS0);
+}
+```
+
+找到`CtSph#entry`
+
+```java
+@Override
+public Entry entry(String name, EntryType type, int count, Object... args) throws BlockException {
+    // String 类型的资源
+    StringResourceWrapper resource = new StringResourceWrapper(name, type);
+    return entry(resource, count, args);
+}
+
+public Entry entry(ResourceWrapper resourceWrapper, int count, Object... args) throws BlockException {
+    return entryWithPriority(resourceWrapper, count, false, args);
+}
+```
+
+然后进入了`entryWithPriority`方法 ：
+
+```java
+private Entry entryWithPriority(ResourceWrapper resourceWrapper, int count, boolean prioritized, Object... args)
+    throws BlockException {
+    // 校验全局上下文 Context
+    Context context = ContextUtil.getContext();
+    if (context instanceof NullContext) {
+        // The {@link NullContext} indicates that the amount of context has exceeded the threshold,
+        // so here init the entry only. No rule checking will be done.
+        return new CtEntry(resourceWrapper, null, context);
+    }
+
+    if (context == null) {
+        // Using default context.
+        context = InternalContextUtil.internalEnter(Constants.CONTEXT_DEFAULT_NAME);
+    }
+
+    // Global switch is close, no rule checking will do.
+    if (!Constants.ON) {
+        return new CtEntry(resourceWrapper, null, context);
+    }
+
+    // 重点来了 ：寻找或构建责任链
+    ProcessorSlot<Object> chain = lookProcessChain(resourceWrapper);
+
+    /*
+     * Means amount of resources (slot chain) exceeds {@link Constants.MAX_SLOT_CHAIN_SIZE},
+     * so no rule checking will be done.
+     */
+    if (chain == null) {
+        return new CtEntry(resourceWrapper, null, context);
+    }
+	// 构建一个entry
+    Entry e = new CtEntry(resourceWrapper, chain, context);
+    try {
+        // 在过滤链中判断是否要被限流
+        chain.entry(context, resourceWrapper, null, count, prioritized, args);
+    } catch (BlockException e1) {
+        e.exit(count, args);
+        throw e1;
+    } catch (Throwable e1) {
+        // This should not happen, unless there are errors existing in Sentinel internal.
+        RecordLog.info("Sentinel unexpected exception", e1);
+    }
+    return e;
+}
+```
+
+`entryWithPriority`方法就做了三件事 ：
+
+1. 校验Context
+2. 构建过滤链
+3. 通过过滤链构建Entry，并通过过滤链来判断是否要限流。
+
+
+
+其中比较重要的是 构建责任链的方法：
+
+```java
+ProcessorSlot<Object> lookProcessChain(ResourceWrapper resourceWrapper) {
+    ProcessorSlotChain chain = chainMap.get(resourceWrapper);
+    // 经典DCL
+    if (chain == null) {
+        synchronized (LOCK) {
+            chain = chainMap.get(resourceWrapper);
+            if (chain == null) {
+                // Entry size limit.
+                if (chainMap.size() >= Constants.MAX_SLOT_CHAIN_SIZE) {
+                    return null;
+                }
+                // 如果没找到就构建
+                chain = SlotChainProvider.newSlotChain();
+                Map<ResourceWrapper, ProcessorSlotChain> newMap = new HashMap<ResourceWrapper, ProcessorSlotChain>(
+                    chainMap.size() + 1);
+                // 为了线程安全来用newMap替换chainMap
+                newMap.putAll(chainMap);
+                newMap.put(resourceWrapper, chain);
+                chainMap = newMap;
+            }
+        }
+    }
+    return chain;
+}
+```
+
+
+
+`SlotChainProvider#newSlotChain`
+
+```java
+public static ProcessorSlotChain newSlotChain() {
+    if (slotChainBuilder != null) {
+        return slotChainBuilder.build();
+    }
+    // 通过SPI机制来加载过滤链
+    // Resolve the slot chain builder SPI.
+    slotChainBuilder = SpiLoader.of(SlotChainBuilder.class).loadFirstInstanceOrDefault();
+
+    if (slotChainBuilder == null) {
+        // Should not go through here.
+        RecordLog.warn("[SlotChainProvider] Wrong state when resolving slot chain builder, using default");
+        slotChainBuilder = new DefaultSlotChainBuilder();
+    } else {
+        RecordLog.info("[SlotChainProvider] Global slot chain builder resolved: {}",
+            slotChainBuilder.getClass().getCanonicalName());
+    }
+    // 调用过滤链的build
+    return slotChainBuilder.build();
+}
+```
+
+
+
+通过SPI加载的配置文件中默认是 ：`DefaultSlotChainBuilder`
+
+`DefaultSlotChainBuilder#build`有使用了SPI机制加载了`ProcessorSlot`的实现类。
+
+```java
+@Override
+public ProcessorSlotChain build() {
+    ProcessorSlotChain chain = new DefaultProcessorSlotChain();
+    // 又通过SPI机制加载了 META-INF/services/com.alibaba.csp.sentinel.slotchain.ProcessorSlot
+    List<ProcessorSlot> sortedSlotList = SpiLoader.of(ProcessorSlot.class).loadInstanceListSorted();
+    for (ProcessorSlot slot : sortedSlotList) {
+        if (!(slot instanceof AbstractLinkedProcessorSlot)) {
+            RecordLog.warn("The ProcessorSlot(" + slot.getClass().getCanonicalName() + ") is not an instance of AbstractLinkedProcessorSlot, can't be added into ProcessorSlotChain");
+            continue;
+        }
+
+        chain.addLast((AbstractLinkedProcessorSlot<?>) slot);
+    }
+
+    return chain;
+}
+```
+
+`ProcessorSlot`的默认SPI配置文件有 ：
+
+```java
+# Sentinel default ProcessorSlots
+com.alibaba.csp.sentinel.slots.nodeselector.NodeSelectorSlot
+com.alibaba.csp.sentinel.slots.clusterbuilder.ClusterBuilderSlot
+com.alibaba.csp.sentinel.slots.logger.LogSlot
+com.alibaba.csp.sentinel.slots.statistic.StatisticSlot
+com.alibaba.csp.sentinel.slots.block.authority.AuthoritySlot
+com.alibaba.csp.sentinel.slots.system.SystemSlot
+com.alibaba.csp.sentinel.slots.block.flow.FlowSlot
+com.alibaba.csp.sentinel.slots.block.degrade.DegradeSlot
+```
+
+Slot都能顾明思义，我们拿限流的FlowSlot来做源码解析。
+
+
+
+`FlowSlot#entry`
+
+```java
+@Spi(order = Constants.ORDER_FLOW_SLOT)
+public class FlowSlot extends AbstractLinkedProcessorSlot<DefaultNode> {
+
+    private final FlowRuleChecker checker;
+
+    public FlowSlot() {
+        // 用于检查限流的检查者
+        this(new FlowRuleChecker());
+    }
+
+    /**
+     * Package-private for test.
+     *
+     * @param checker flow rule checker
+     * @since 1.6.1
+     */
+    FlowSlot(FlowRuleChecker checker) {
+        AssertUtil.notNull(checker, "flow checker should not be null");
+        this.checker = checker;
+    }
+
+    @Override
+    public void entry(Context context, ResourceWrapper resourceWrapper, DefaultNode node, int count,
+                      boolean prioritized, Object... args) throws Throwable {
+        checkFlow(resourceWrapper, context, node, count, prioritized);
+
+        fireEntry(context, resourceWrapper, node, count, prioritized, args);
+    }
+	
+    // 通过FlowRuleChecker#Check检查是否需要限流
+    void checkFlow(ResourceWrapper resource, Context context, DefaultNode node, int count, boolean prioritized)
+        throws BlockException {
+        // 如果需要限流，就直接抛出异常
+        checker.checkFlow(ruleProvider, resource, context, node, count, prioritized);
+    }
+    // 省略exit方法
+	
+    // 从缓存Map中根据resource获取限流规则
+    private final Function<String, Collection<FlowRule>> ruleProvider = new Function<String, Collection<FlowRule>>() {
+        @Override
+        public Collection<FlowRule> apply(String resource) {
+            // Flow rule map should not be null.
+            Map<String, List<FlowRule>> flowRules = FlowRuleManager.getFlowRuleMap();
+            return flowRules.get(resource);
+        }
+    };
+}
+```
+
+通过FlowRuleManager获取限流规则，然后依次判断。
+
+`FlowRuleChecker#checkFlow`
+
+```java
+public void checkFlow(Function<String, Collection<FlowRule>> ruleProvider, ResourceWrapper resource,
+                      Context context, DefaultNode node, int count, boolean prioritized) throws BlockException {
+    if (ruleProvider == null || resource == null) {
+        return;
+    }
+    Collection<FlowRule> rules = ruleProvider.apply(resource.getName());
+    if (rules != null) {
+        for (FlowRule rule : rules) {
+            // 如果不能通过校验就抛出异常
+            if (!canPassCheck(rule, context, node, count, prioritized)) {
+                throw new FlowException(rule.getLimitApp(), rule);
+            }
+        }
+    }
+}
+```
+
+
+
+`canPassCheck`
+
+```java
+public boolean canPassCheck(/*@NonNull*/ FlowRule rule, Context context, DefaultNode node, int acquireCount,
+                                                boolean prioritized) {
+    String limitApp = rule.getLimitApp();
+    if (limitApp == null) {
+        return true;
+    }
+	
+    // 如果是集群模式
+    if (rule.isClusterMode()) {
+        return passClusterCheck(rule, context, node, acquireCount, prioritized);
+    }
+	
+    // 如果是本地检查
+    return passLocalCheck(rule, context, node, acquireCount, prioritized);
+}
+```
+
+
+
+```java
+private static boolean passLocalCheck(FlowRule rule, Context context, DefaultNode node, int acquireCount,
+                                      boolean prioritized) {
+    // 根据rule返回不同的node
+    Node selectedNode = selectNodeByRequesterAndStrategy(rule, context, node);
+    if (selectedNode == null) {
+        return true;
+    }
+	// 调用配置的流控行为
+    return rule.getRater().canPass(selectedNode, acquireCount, prioritized);
+}
+```
+
+配置的流控行为在 ：`FlowRule#setStrategy`中配置
+
+有四种，都是`TrafficShapingController`的子类
+
+- DefaultController 直接拒绝
+- RateLimiterController 匀速排队
+- WarmUpController 预热
+- WarmUpRateLimiterController 预热 + 排队
+
+
+
+## 统计算法解析
+
+
+
+
+
+## 降级实现
+
+降级算法的实现与统计限流类似，甚至更简单一些，都是通过Manager获取规则，然后依次判断。
+
+```java
+void performChecking(Context context, ResourceWrapper r) throws BlockException {
+    // 获取降级规则
+    List<CircuitBreaker> circuitBreakers = DegradeRuleManager.getCircuitBreakers(r.getName());
+    if (circuitBreakers == null || circuitBreakers.isEmpty()) {
+        return;
+    }
+    // 循环判断，如果不能通过则抛出异常
+    for (CircuitBreaker cb : circuitBreakers) {
+        if (!cb.tryPass(context)) {
+            throw new DegradeException(cb.getRule().getLimitApp(), cb.getRule());
+        }
+    }
+}
+```
+
+
+
+## 总结
+
+Sentinel在加载责任链中使用了SPI机制加载，这样提升了扩展性。
