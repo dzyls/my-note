@@ -809,7 +809,67 @@ private static boolean passLocalCheck(FlowRule rule, Context context, DefaultNod
 
 ## 统计算法解析
 
+统计的入口是 `StatisticSlot#entry`
 
+```java
+@Override
+public void entry(Context context, ResourceWrapper resourceWrapper, DefaultNode node, int count,
+                  boolean prioritized, Object... args) throws Throwable {
+    try {
+        // Do some checking.
+        // 先执行后续的过滤链，如果根据后续过滤链的执行结果来决定怎么做
+        fireEntry(context, resourceWrapper, node, count, prioritized, args);
+
+        // Request passed, add thread count and pass count.
+        node.increaseThreadNum();
+        node.addPassRequest(count);
+        
+    } //省略处理异常的catch块
+}
+```
+
+`node#increaseThreadNum`最终是增加了`StatisticNode`类的`curThreadNum`；
+
+```java
+// longAdder类型的
+private LongAdder curThreadNum = new LongAdder();
+
+@Override
+public void increaseThreadNum() {
+    curThreadNum.increment();
+}
+```
+
+
+
+而`node#addPassRequest`则不是一个LongAdder类型的属性了，而是一个Metric对象，这个对象中有一个`LeapArray`属性，这个属性层层封装了一个LongAdder数组，这个数组中的LongAdder每个分别是 :
+
+```java
+public enum MetricEvent {
+
+    /**
+     * Normal pass.
+     */
+    // 第0个是pass的数量
+    PASS,
+    /**
+     * Normal block.
+     */
+    // 阻塞的数量
+    BLOCK,
+    // 异常
+    EXCEPTION,
+    SUCCESS,
+    RT,
+
+    /**
+     * Passed in future quota (pre-occupied, since 1.5.0).
+     */
+    OCCUPIED_PASS
+}
+```
+
+LeapArray是一个环形数组，新的数据会替换旧的数据，每次需要求和直接通过包装类获取对应位置的LongAdder的sum即可。
 
 
 
@@ -838,3 +898,5 @@ void performChecking(Context context, ResourceWrapper r) throws BlockException {
 ## 总结
 
 Sentinel在加载责任链中使用了SPI机制加载，这样提升了扩展性。
+
+在统计时，采用的是滑动窗口算法，底层是一个LongAdder数组，并采用了CAS操作来提高并发，使用了Thread.yield释放cpu资源。
