@@ -881,7 +881,7 @@ public void afterPropertiesSet() throws Exception {
 
 
 
-父类的`RenferenceConfgi#get()`会调用`init`操作。
+父类的`RenferenceConfig#get()`会调用`init`操作。
 
 上源码 ：
 
@@ -978,6 +978,12 @@ private T createProxy(Map<String, String> map) {
 
 
 **总结**
+
+服务的引用过程就是获得代理对象的过程。起始于ReferenceBean的afterPropertiesSet方法中，在这个方法中会调用父类的ReferenceConfig的init方法执行初始化，在初始化方法里，会创建代理。创建代理时，会先判断是否是本地服务，如果是本地服务那么就去缓存里面去找Invoker；如果是远程服务，那么就会从注册中心中获取服务提供者的信息，然后封装为Invoker对象，如果有多个Invoker会合并成一个。然后通过获得的Invoker对象创建代理。
+
+在从注册中心获得服务提供者的地址后，DubboProtocol#refer在创建Invoker对象时，会使用NettyClient进行通信。
+
+
 
 大致的流程是，先检查配置，构建一个URL，通过URL自适应扩展调用protocol.refer得到相应的invoker。如果有多个invoker，就合并为一个invoker以供调用。然后再通过invoker获取代理，这个代理就是被调用的对象。
 
