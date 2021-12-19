@@ -137,6 +137,22 @@ procs -----------memory---------- ---swap-- -----io---- -system-- ------cpu-----
 
 
 
+### iostat
+
+---
+
+iostat命令则更简单明了 ：
+
+```bash
+avg-cpu:  %user   %nice %system %iowait  %steal   %idle
+           0.16    0.00    0.17    0.01    0.00   99.67
+
+Device:            tps    kB_read/s    kB_wrtn/s    kB_read    kB_wrtn
+sda               1.75        51.42        23.93     218109     101506
+dm-0              1.28        43.86        23.44     186031      99418
+dm-1              0.02         0.58         0.00       2460          0
+```
+
 
 
 
