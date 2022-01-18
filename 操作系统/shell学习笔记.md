@@ -22,7 +22,6 @@ fi
 - if判断表达式中，使用`==`号判断；**变量前后要有空格**
 - then、else、fi关键字
 - 如果要使用else-if，那么else-if后也要用then
-- 注意**空格**，if后面、变量前后都有空格
 
 
 
@@ -51,69 +50,6 @@ esac
 - 每个条件完毕后使用`;;`表示结束，类似`break`
 - `*)`可以表示未匹配的，类似于`default`
 - 最后结束使用`esac`
-
-
-
-### 比较
-
----
-
-常见的是数字、字符的比较 ：
-
-```bash
-#!/bin/bash
-if [$1 -eq 0 ];then 
-	echo true
-fi
-```
-
-```bash
-#!/bin/bash
-if [[ $1 -gt $2 ]];then 
-	echo bigger
-fi
-```
-
-- `-eq`相等
-- `-gt`大于
-- `-lt`小于
-- `-ge`大于等于
-- `-le`小于等于
-
-
-
-**文件类型判断**
-
-- `-f` 如果为文件返回true
-- `-x`如果可执行文件
-- `-d` 目录
-- `-w` 可写
-- `-r` 可读
-- `-L` 软连接
-
-```bash
-if [ -f $1 ];then
- 	echo file
- fi
-```
-
-
-
-**文本判断**
-
-string的判断可以使用 `=` `>` `<`
-
-也可以使用`-z` ：如果为空返回true
-
-`-n`如果非空，则返回true
-
-```bash
-if [[ -z $1 ]];then
-	echo null
-fi
-```
-
-
 
 
 

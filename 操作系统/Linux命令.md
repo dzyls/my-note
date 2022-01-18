@@ -344,6 +344,24 @@ done
 
 
 
+### grep
+
+---
+
+`grep`是最常用的几个命令之一。
+
+常用的如下 ：
+
+- egrep 正则匹配
+- 匹配的行数，`grep -c 'abc' text`，会打印出匹配的**行数**
+- 匹配的次数，`egrep -o 'abc' text | wc -l`，`-o`是输出匹配的部分，利用`wc -l`可以巧妙的匹配到次数
+- 显示行数，`grep -n 'abc' text` 
+- 只显示存在于哪个文件，`grep -r -l 'abc' text` ，`-l`可以设置只显示匹配到的文件
+- 排除文件 ：`--exclude "*.log"` ,排除文件夹 `--exclude-dir "day02"`
+- `--include`
+
+
+
 ### sed
 
 ---
@@ -360,4 +378,37 @@ sed是用于文本替换的，比如 ：
 
 - 去除空白行 ：`sed '/^$d/' file`
 - 标记匹配的字符 ：`echo 'hello world' | sed 's/\w\+/[&]/g'`，&表示匹配的字符，[&]表示怎样标记之前匹配的字符
-- 
+- 使用正则替换。`echo 'abc 10 edf' | sed 's/c \([0-10]*\)/\1/'`其中，括号需要转义字符，而`\1`代表第一个匹配到的。
+
+
+
+### awk
+
+---
+
+awk可以进行一些高级的文本处理 ：
+
+命令结构 ：`awk 'BEGIN{} {} END{}'` 。三个括号都是可选的，可以单独有BEGIN或者END。
+
+工作原理，开始时执行BEGIN，然后每次读一行都执行中间的括号，结束时执行END。
+
+awk的特殊变量 ：
+
+- NR 执行过程是当前行
+- NF 代表字段数量。如果在
+- $0 代表当前行
+- $1 代表第N个字段
+
+例子 ：
+
+- 统计一个文件的行数 ：`awk 'BEGIN{i=0} {i++} {print i}' filename` 。此命令可以用`wc -l filename`替代。`awk 'END{print NR}'`
+- 打印倒数第二列的字段 ：`awk '{print $(NF-1)'`
+- 可以用 -v进行传参。`awk -v VAR=123 '{print VAR}'`
+- 使用awk进行过滤 ：`awk '{if (NR < 5) print $2}'` ；不包含`linux`的行 ：`awk '!/linux/'`
+
+
+
+### 统计词频
+
+---
+
