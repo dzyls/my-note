@@ -412,3 +412,43 @@ awk的特殊变量 ：
 
 ---
 
+
+
+
+
+### 压缩 tar
+
+---
+
+压缩命令`tar`是一个常用的归档命令，常见如 ：
+
+`tar -cvf out.tar file.txt`
+
+其中 ：
+
+- `-c`是创建文件的意思，create file
+- `-f`是指定文件名称的意思
+- `-v`是查看细节信息
+
+除此之外，还可以向已有的tar包添加文件，如 `tar -rvf origin.tar new_file.txt `即可向origin.tar包添加new_file.txt的新文件。
+
+- `-r`向origin.tar添加一个新文件
+
+还可以使用`tar -tf origin.tar`来查看tar包中的文件：
+
+- `-t`查看归档包中的文件。
+
+
+
+解压缩 ：
+
+`tar -xf origin.tar`
+
+`-x`是解压缩的参数。
+
+也可以只解压部分文件 ：`tar -xf origin.tar a.txt`，这个命令是只将`a.txt`解压出来。
+
+还可指定解压后存放的文件夹 ：`tar -xf origin.tar -C /filepath/`
+
+
+
