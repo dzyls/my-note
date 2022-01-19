@@ -416,11 +416,11 @@ awk的特殊变量 ：
 
 
 
-### 压缩 tar
+### 归档 tar
 
 ---
 
-压缩命令`tar`是一个常用的归档命令，常见如 ：
+命令`tar`是一个常用的归档命令，常见如 ：
 
 `tar -cvf out.tar file.txt`
 
@@ -440,7 +440,7 @@ awk的特殊变量 ：
 
 
 
-解压缩 ：
+
 
 `tar -xf origin.tar`
 
@@ -451,4 +451,32 @@ awk的特殊变量 ：
 还可指定解压后存放的文件夹 ：`tar -xf origin.tar -C /filepath/`
 
 
+
+更新归档包中的文件 ：`tar -uf package.tar update.file`。此命令会更新package.tar中同名的update.file，会根据修改的时间戳来判断是否要更新。
+
+
+
+拼接两个归档包：
+
+`tar -Af originA.tar OriginB.tar`
+
+
+
+删除归档包中的文件：
+
+`tar -f origin.tar --delete file1`即可删除归档包中的文件。
+
+
+
+**tar命令只可用于归档，不具备压缩功能**
+
+如果要压缩，则要指定 ：
+
+- `-z` 使用gzip压缩
+- `-j` 使用bunzip2
+- `--lzma` lzma格式
+
+
+
+还可根据`-a`来根据文件名来选择
 
