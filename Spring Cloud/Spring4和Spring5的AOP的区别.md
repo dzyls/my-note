@@ -63,3 +63,14 @@ Spring4对应Spring Boot 1版本，Spring 5对应Spring Boot 2版本。它们对
 
 
 总结 ：**Spring 4的AOP的五种通知，并不符合后进先出的规则；Spring 5针对这个点做了修改**。
+
+
+
+### AOP通知的设计模式
+
+---
+
+AOP通知，底层是使用了责任链模式。
+
+通过扫描到所有的通知，放入一个chain的List中。为了确保执行顺序，对这个List进行排序。
+
