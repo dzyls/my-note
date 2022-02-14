@@ -167,6 +167,29 @@ public class MapperRegistry {
 
 ```
 
+MapperRegistry就是一个存放MapperProxyFactory的容器，key是class对象，value是MapperProxyFactory。
+
+
+
+MapperRegistry是SqlSessionFactoryBuilder.build方法时，就扫描加载的。
+
+```java
+  public SqlSessionFactory build(Reader reader, String environment, Properties properties) {
+      ......
+      XMLConfigBuilder parser = new XMLConfigBuilder(reader, environment, properties);
+      return build(parser.parse());
+	  ......
+  }
+```
+
+```java
+public Configuration parse() {
+  // 解析 mybatis-config.xml
+  parseConfiguration(parser.evalNode("/configuration"));
+  return configuration;
+}
+```
+
 
 
 
