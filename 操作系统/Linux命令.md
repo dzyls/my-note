@@ -480,3 +480,144 @@ awk的特殊变量 ：
 
 还可根据`-a`来根据文件名来选择
 
+
+
+### 显示Java进程的工作目录
+
+---
+
+`pwdx`可以查看进程的目录，搭配grep可以查询java进程的工作目录。
+
+`pwdx ``ps -ef | grep java | grep -v grep | awk '{print $2}'`` `
+
+
+
+### ping
+
+---
+
+ping 是常用的网络检测的工具 ：
+
+`ping www.baidu.com -c 2`  -c是指定次数。
+
+```bash
+#!/bin/bash
+for ip in 192.168.137.{0..255};
+do
+	{
+		ping $ip -c 2 &> /dev/null
+		if [ $? -eq 0 ]
+		then
+			echo $ip is alive
+		fi
+	}&
+done
+wait
+```
+
+
+
+**原理** ：
+
+1. `$$`代表shell脚本的pid
+2. `$!`最后运行的后台PID
+3. `$?` 最后命令运行的结束代码，如果等于0代表没有错误。
+
+这个脚本就使用了`$?`，如果可以Ping通则没有问题。
+
+并且使用了 `&`来表示并行。
+
+`wait`表示脚本进程会等待所有的子脚本进程都退出，才会退出。
+
+
+
+### scp
+
+---
+
+`scp -r user@hostIp:/home/path /home/path`将远程主机的内容复制到本地。
+
+
+
+### SSH端口转发
+
+---
+
+`ssh -L 8000:www.baidu.com:80 root@localhost`
+
+
+
+### 远程主机目录挂载到本地
+
+---
+
+`sshfs -o allow_other user@remotehost:/home/path /mnt/mountpoint`
+
+将远程的/home/path挂载到/mnt/mountpoint目录
+
+
+
+**卸载**
+
+`unmount /mnt/mountpoint`
+
+
+
+### lsof
+
+---
+
+`lsof -i`展示端口和进程的关系。
+
+`lsof -i | grep ‘:[0-9]\+->’ -o | grep ‘[0-9]\+' -o | sort | uniq `
+
+
+
+### iptable
+
+---
+
+iptables可以实现对网络的控制 ：
+
+四表 ：指的是iptables的四个功能 
+
+- filter ：控制数据包是否允许进出、转发
+- nat ：数据包的地址转换
+- mangle ：修改数据包的原数据
+- raw ：控制nat表的连接追踪机制启用情况
+
+
+
+五链 ：
+
+- PREROUTING
+- INPUT
+- FORWARD
+- OUTPUT
+- POSTROUTING
+
+
+
+堵通策略 ：
+
+- ACCEPT
+- DROP
+- REJECT
+
+
+
+DROP是直接丢，不会回复；REJECT是会告诉对方我拒绝接收。
+
+`iptables [-t table] COMMAND [chain] CRETIRIA -j ACTION`
+
+-t table是操作的表，默认为filter
+
+chain就是链
+
+
+
+举例 ：
+
+- 禁止某个IP访问本地的80端口
+
+  `iptables -A `
