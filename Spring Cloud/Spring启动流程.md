@@ -91,3 +91,136 @@ public void refresh() throws BeansException, IllegalStateException {
 	}
 }
 ```
+
+
+
+### @Autowired的实现
+
+---
+
+`@Autowired`注解是根据类型注入的注解，也是比较常用的注解。
+
+其实现的原理在`AutowiredAnnoationBeanPostProcesser`，从名字上看，这个类是一个`BeanPostProcesser`。
+
+```java
+public class AutowiredAnnotationBeanPostProcessor implements SmartInstantiationAwareBeanPostProcessor,
+      MergedBeanDefinitionPostProcessor, PriorityOrdered, BeanFactoryAware {
+          
+      }
+```
+
+其中AutowiredAnnoationBeanPostProcesser实现了 MergedBeanDefinitionPostProcesser中的PostPrcessMergedBeanDefinition方法 ：
+
+```java
+@Override
+public void postProcessMergedBeanDefinition(RootBeanDefinition beanDefinition, Class<?> beanType, String beanName) {
+   InjectionMetadata metadata = findAutowiringMetadata(beanName, beanType, null);
+   metadata.checkConfigMembers(beanDefinition);
+}
+```
+
+通过这个方法，来扫描类中的方法和属性，并封装为InjectionMetadata。
+
+```java
+private InjectionMetadata findAutowiringMetadata(String beanName, Class<?> clazz, @Nullable PropertyValues pvs) {
+
+   String cacheKey = (StringUtils.hasLength(beanName) ? beanName : clazz.getName());
+
+   InjectionMetadata metadata = this.injectionMetadataCache.get(cacheKey);
+   if (InjectionMetadata.needsRefresh(metadata, clazz)) {
+      synchronized (this.injectionMetadataCache) {
+         metadata = this.injectionMetadataCache.get(cacheKey);
+         if (InjectionMetadata.needsRefresh(metadata, clazz)) {
+            if (metadata != null) {
+               metadata.clear(pvs);
+            }
+             // 关注重点
+            metadata = buildAutowiringMetadata(clazz);
+             // 重点在上面
+            this.injectionMetadataCache.put(cacheKey, metadata);
+         }
+      }
+   }
+   return metadata;
+}
+
+private InjectionMetadata buildAutowiringMetadata(Class<?> clazz) {
+   if (!AnnotationUtils.isCandidateClass(clazz, this.autowiredAnnotationTypes)) {
+      return InjectionMetadata.EMPTY;
+   }
+
+   List<InjectionMetadata.InjectedElement> elements = new ArrayList<>();
+   Class<?> targetClass = clazz;
+
+   do {
+      final List<InjectionMetadata.InjectedElement> currElements = new ArrayList<>();
+	// 扫描所有的属性
+      ReflectionUtils.doWithLocalFields(targetClass, field -> {
+         MergedAnnotation<?> ann = findAutowiredAnnotation(field);
+         if (ann != null) {
+            if (Modifier.isStatic(field.getModifiers())) {
+               if (logger.isInfoEnabled()) {
+                  logger.info("Autowired annotation is not supported on static fields: " + field);
+               }
+               return;
+            }
+            boolean required = determineRequiredStatus(ann);
+            currElements.add(new AutowiredFieldElement(field, required));
+         }
+      });
+	// 扫描所有的方法
+      ReflectionUtils.doWithLocalMethods(targetClass, method -> {
+         Method bridgedMethod = BridgeMethodResolver.findBridgedMethod(method);
+         if (!BridgeMethodResolver.isVisibilityBridgeMethodPair(method, bridgedMethod)) {
+            return;
+         }
+         MergedAnnotation<?> ann = findAutowiredAnnotation(bridgedMethod);
+         if (ann != null && method.equals(ClassUtils.getMostSpecificMethod(method, clazz))) {
+            if (Modifier.isStatic(method.getModifiers())) {
+               if (logger.isInfoEnabled()) {
+                  logger.info("Autowired annotation is not supported on static methods: " + method);
+               }
+               return;
+            }
+            if (method.getParameterCount() == 0) {
+               if (logger.isInfoEnabled()) {
+                  logger.info("Autowired annotation should only be used on methods with parameters: " +
+                        method);
+               }
+            }
+            boolean required = determineRequiredStatus(ann);
+            PropertyDescriptor pd = BeanUtils.findPropertyForMethod(bridgedMethod, clazz);
+            currElements.add(new AutowiredMethodElement(method, required, pd));
+         }
+      });
+
+      elements.addAll(0, currElements);
+      // 从当前类，一直扫描到父类，直到Object（父类的属性也会被注入）
+      targetClass = targetClass.getSuperclass();
+   }
+   while (targetClass != null && targetClass != Object.class);
+
+   return InjectionMetadata.forElements(elements, clazz);
+}
+```
+
+
+
+那代码是如何运行到AutowiredAnnoationBeanPostProcesser的呢？
+
+可以猜测一下，什么时候会对类需要注入的属性进行扫描呢？
+
+答案是在扫描到要加载的Bean之后，才会去扫描这些Bean中需要注入的属性。那就是在容器启动时，即容器的刷新方法（refresh)。
+
+refresh方法在`AbstractApplicationContext`抽象父类中（模板方法模式），在容器刷新时，会执行一个方法叫 ：`registerBeanPostProcessors`。
+
+```java
+@Override
+public void refresh() throws BeansException, IllegalStateException {
+   synchronized (this.startupShutdownMonitor) {
+		// 省略部分重点
+         registerBeanPostProcessors(beanFactory);
+         beanPostProcess.end();
+```
+
+这个方法会执行所有的BeanPostProcessor。
