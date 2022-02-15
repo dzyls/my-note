@@ -192,5 +192,137 @@ public Configuration parse() {
 
 
 
+#### MappedStatement
+
+如果通过`sqlSession.selectOne()`这种方式来执行SQL语句，那么最终会调用这个方法 ：
+
+```java
+@Override
+public <E> List<E> selectList(String statement, Object parameter, RowBounds rowBounds) {
+  try {
+    // MappedStatement
+    MappedStatement ms = configuration.getMappedStatement(statement);
+    // executor来执行，后面会介绍
+    return executor.query(ms, wrapCollection(parameter), rowBounds, Executor.NO_RESULT_HANDLER);
+  } catch (Exception e) {
+    throw ExceptionFactory.wrapException("Error querying database.  Cause: " + e, e);
+  } finally {
+    ErrorContext.instance().reset();
+  }
+}
+```
 
 
+
+而configuration类的`getMappedStatement`方法 ：
+
+```java
+protected final Map<String, MappedStatement> mappedStatements = new StrictMap<MappedStatement>("Mapped Statements collection")
+    .conflictMessageProducer((savedValue, targetValue) ->
+        ". please check " + savedValue.getResource() + " and " + targetValue.getResource());
+  public MappedStatement getMappedStatement(String id, boolean validateIncompleteStatements) {
+    if (validateIncompleteStatements) {
+      buildAllStatements();
+    }
+    return mappedStatements.get(id);
+  }
+```
+
+可以看到Configuration的`mappedStatements`就是一个map，那么是什么时候将`xml`解析加载到map中的呢？
+
+其实和MapperRegistry一样，也是`SqlSessionFactoryBuild`在读取配置文件，并build`SqlSessionFactory`就执行了加载。
+
+```java
+  private void mapperElement(XNode parent) throws Exception {
+    if (parent != null) {
+      for (XNode child : parent.getChildren()) {
+        if ("package".equals(child.getName())) {
+          String mapperPackage = child.getStringAttribute("name");
+          configuration.addMappers(mapperPackage);
+        } else {
+          String resource = child.getStringAttribute("resource");
+          String url = child.getStringAttribute("url");
+          String mapperClass = child.getStringAttribute("class");
+          if (resource != null && url == null && mapperClass == null) {
+            ErrorContext.instance().resource(resource);
+            InputStream inputStream = Resources.getResourceAsStream(resource);
+            XMLMapperBuilder mapperParser = new XMLMapperBuilder(inputStream, configuration, resource, configuration.getSqlFragments());
+            // 重点
+            mapperParser.parse();
+          } else if (resource == null && url != null && mapperClass == null) {
+            ErrorContext.instance().resource(url);
+            InputStream inputStream = Resources.getUrlAsStream(url);
+            XMLMapperBuilder mapperParser = new XMLMapperBuilder(inputStream, configuration, url, configuration.getSqlFragments());
+            mapperParser.parse();
+          } else if (resource == null && url == null && mapperClass != null) {
+            Class<?> mapperInterface = Resources.classForName(mapperClass);
+            configuration.addMapper(mapperInterface);
+          } else {
+            throw new BuilderException("A mapper element may only specify a url, resource or class, but not more than one.");
+          }
+        }
+      }
+    }
+  }
+```
+
+```java
+public void parse() {
+  if (!configuration.isResourceLoaded(resource)) {
+    // 解析配置文件的mapper节点
+    configurationElement(parser.evalNode("/mapper"));
+    configuration.addLoadedResource(resource);
+    bindMapperForNamespace();
+  }
+
+  parsePendingResultMaps();
+  parsePendingCacheRefs();
+  parsePendingStatements();
+}
+```
+
+`bindMapperForNamespace`是根据namespace来尝试加载mapper
+
+```java
+private void bindMapperForNamespace() {
+  String namespace = builderAssistant.getCurrentNamespace();
+  if (namespace != null) {
+    Class<?> boundType = null;
+    try {
+      // 根据namespace来尝试加载Mapper。如果namespace写的不是类的全限定名，就会找不到类
+      boundType = Resources.classForName(namespace);
+    } catch (ClassNotFoundException e) {
+      // ignore, bound type is not required
+    }
+    if (boundType != null && !configuration.hasMapper(boundType)) {
+      // Spring may not know the real resource name so we set a flag
+      // to prevent loading again this resource from the mapper interface
+      // look at MapperAnnotationBuilder#loadXmlResource
+      configuration.addLoadedResource("namespace:" + namespace);
+      configuration.addMapper(boundType);
+    }
+  }
+}
+```
+
+而`configurationElement`则是解析xml，放到Confirguration类中的mappedStatements的map容器中。
+
+```java
+private void configurationElement(XNode context) {
+  try {
+    String namespace = context.getStringAttribute("namespace");
+    if (namespace == null || namespace.isEmpty()) {
+      throw new BuilderException("Mapper's namespace cannot be empty");
+    }
+    builderAssistant.setCurrentNamespace(namespace);
+    cacheRefElement(context.evalNode("cache-ref"));
+    cacheElement(context.evalNode("cache"));
+    parameterMapElement(context.evalNodes("/mapper/parameterMap"));
+    resultMapElements(context.evalNodes("/mapper/resultMap"));
+    sqlElement(context.evalNodes("/mapper/sql"));
+    buildStatementFromContext(context.evalNodes("select|insert|update|delete"));
+  } catch (Exception e) {
+    throw new BuilderException("Error parsing Mapper XML. The XML location is '" + resource + "'. Cause: " + e, e);
+  }
+}
+```
