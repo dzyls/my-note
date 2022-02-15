@@ -326,3 +326,39 @@ private void configurationElement(XNode context) {
   }
 }
 ```
+
+
+
+#### Executor
+
+Executor是执行SQL语句的接口 ，创建Executor的方法就在Confirguation ：
+
+`org.apache.ibatis.session.Configuration#newExecutor`
+
+```java
+public Executor newExecutor(Transaction transaction, ExecutorType executorType) {
+  executorType = executorType == null ? defaultExecutorType : executorType;
+  executorType = executorType == null ? ExecutorType.SIMPLE : executorType;
+  Executor executor;
+  // 默认为SimpleExecutor
+  if (ExecutorType.BATCH == executorType) {
+    executor = new BatchExecutor(this, transaction);
+  } else if (ExecutorType.REUSE == executorType) {
+    executor = new ReuseExecutor(this, transaction);
+  } else {
+    executor = new SimpleExecutor(this, transaction);
+  }
+  // 如果打开了二级缓存，则会创建CachingExecutor
+  if (cacheEnabled) {
+    executor = new CachingExecutor(executor);
+  }
+  executor = (Executor) interceptorChain.pluginAll(executor);
+  return executor;
+}
+```
+
+
+
+> MyBatis的一级缓存作用域是整个SqlSession
+>
+> 二级缓存的作用域则是namespace，如果一张表有两个不同的namespace进行操作，那么一定不要使用二级缓存，否则会出现缓存一致性问题。
