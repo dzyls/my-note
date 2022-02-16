@@ -111,6 +111,67 @@ SqlSession session = sqlSessionFactory.openSession()
 
 
 
+#### Configuration
+
+Configuration也是在SqlSessionFactoryBuilder读取配置文件后就生成的，在XmlConfigBuilder的构造函数中创建的。
+
+
+
+Configuration可以用来创建`ParameterHandler`、`ResultSetHandler`、`StatementHandler`、`Executor`。
+
+```java
+public ParameterHandler newParameterHandler(MappedStatement mappedStatement, Object parameterObject, BoundSql boundSql) {
+  ParameterHandler parameterHandler = mappedStatement.getLang().createParameterHandler(mappedStatement, parameterObject, boundSql);
+  parameterHandler = (ParameterHandler) interceptorChain.pluginAll(parameterHandler);
+  return parameterHandler;
+}
+
+public ResultSetHandler newResultSetHandler(Executor executor, MappedStatement mappedStatement, RowBounds rowBounds, ParameterHandler parameterHandler,
+    ResultHandler resultHandler, BoundSql boundSql) {
+  ResultSetHandler resultSetHandler = new DefaultResultSetHandler(executor, mappedStatement, parameterHandler, resultHandler, boundSql, rowBounds);
+  resultSetHandler = (ResultSetHandler) interceptorChain.pluginAll(resultSetHandler);
+  return resultSetHandler;
+}
+
+public StatementHandler newStatementHandler(Executor executor, MappedStatement mappedStatement, Object parameterObject, RowBounds rowBounds, ResultHandler resultHandler, BoundSql boundSql) {
+  StatementHandler statementHandler = new RoutingStatementHandler(executor, mappedStatement, parameterObject, rowBounds, resultHandler, boundSql);
+  statementHandler = (StatementHandler) interceptorChain.pluginAll(statementHandler);
+  return statementHandler;
+}
+
+public Executor newExecutor(Transaction transaction, ExecutorType executorType) {
+  executorType = executorType == null ? defaultExecutorType : executorType;
+  executorType = executorType == null ? ExecutorType.SIMPLE : executorType;
+  Executor executor;
+  if (ExecutorType.BATCH == executorType) {
+    executor = new BatchExecutor(this, transaction);
+  } else if (ExecutorType.REUSE == executorType) {
+    executor = new ReuseExecutor(this, transaction);
+  } else {
+    executor = new SimpleExecutor(this, transaction);
+  }
+  if (cacheEnabled) {
+    executor = new CachingExecutor(executor);
+  }
+  executor = (Executor) interceptorChain.pluginAll(executor);
+  return executor;
+}
+```
+
+可以看到，每次返回`ParameterHandler`、`ResultSetHandler`、`StatementHandler`、`Executor`，都会执行
+
+`interceptorChain.pluginAll()`，这是Mybatis留给程序员的扩展点。
+
+`ParmeterHandler` ：设置参数的Handler
+
+`ResultSetHandler`：结果集Handler
+
+`StatementHandler`：StatementHandler是执行Sql语句的处理器
+
+`Executor`：Executor是执行Sql和提交\回滚操作的处理器，与一级缓存和二级缓存相关。
+
+
+
 #### MapperRegistry
 
 `MapperRegistry`的作用是存放MapperProxyFactory，通过MapperProxyFactory可以创建代理对象（即Mapper接口的代理子类），进而执行Mapper接口的方法。
@@ -359,6 +420,160 @@ public Executor newExecutor(Transaction transaction, ExecutorType executorType) 
 
 
 
-> MyBatis的一级缓存作用域是整个SqlSession
+> MyBatis的一级缓存作用域是整个SqlSession，本质上是一个HashMap，key是将查询语句封装的CacheKey，如果是多个SqlSession或分布式的情况下，一级缓存会有脏数据的情况发生。
 >
 > 二级缓存的作用域则是namespace，如果一张表有两个不同的namespace进行操作，那么一定不要使用二级缓存，否则会出现缓存一致性问题。
+
+关于MyBatis的一级缓存和二级缓存放在下个章节讨论。
+
+
+
+Executor的实现类 ：
+
+![image-20220216105258813](MyBatis.assets/image-20220216105258813.png)
+
+BaseExecutor中实现了一些通用操作，其子类可以直接使用（**模板模式**）。
+
+每个Executor都有两个`PerpetualCache`类型的属性 :
+
+```java
+public abstract class BaseExecutor implements Executor {
+
+  protected Transaction transaction;
+
+  protected PerpetualCache localCache;
+  protected PerpetualCache localOutputParameterCache;
+  protected Configuration configuration;
+```
+
+正是这localCache就是实现一级缓存的关键，这个类型含有一个HashMap。
+
+
+
+CachingExecutor则是一个包装类（**装饰器模式**），构造参数是`Executor`，在执行真正的操作前，会做一些操作来实现，然后才调用真正的Executor来执行语句。
+
+```java
+// 真正的执行器
+private final Executor delegate;
+
+// 构造函数
+public CachingExecutor(Executor delegate) {
+  this.delegate = delegate;
+  delegate.setExecutorWrapper(this);
+}
+
+
+@Override
+public int update(MappedStatement ms, Object parameterObject) throws SQLException {
+  // 清空二级缓存
+  flushCacheIfRequired(ms);
+  return delegate.update(ms, parameterObject);
+}
+```
+
+CachingExecutor中有二级缓存，是以**namespace**为作用域的。
+
+
+
+Executor执行sql语句时，底层是调用jdbc的方式来执行语句。
+
+回顾一下常规的jdbc查询操作：
+
+```java
+			// 注册 JDBC 驱动
+            Class.forName(JDBC_DRIVER);        
+            // 打开链接
+            conn = DriverManager.getConnection(DB_URL,USER,PASS);       
+            // 执行查询
+            stmt = conn.createStatement();
+            String sql = "SELECT id, name, url FROM websites";
+            ResultSet rs = stmt.executeQuery(sql);
+ 			// 省略结果处理、关闭资源等操作
+```
+
+举例 `org.apache.ibatis.executor.SimpleExecutor#doUpdate` ：
+
+```java
+@Override
+public int doUpdate(MappedStatement ms, Object parameter) throws SQLException {
+  Statement stmt = null;
+  try {
+    Configuration configuration = ms.getConfiguration();
+    // 创建StatementHandler
+    StatementHandler handler = configuration.newStatementHandler(this, ms, parameter, RowBounds.DEFAULT, null, null);
+    stmt = prepareStatement(handler, ms.getStatementLog());
+    // Statementhandler就是来处理Statement的，用来执行语句
+    return handler.update(stmt);
+  } finally {
+    closeStatement(stmt);
+  }
+}
+```
+
+
+
+`org.apache.ibatis.executor.statement.PreparedStatementHandler#update`
+
+```java
+@Override
+public int update(Statement statement) throws SQLException {
+  PreparedStatement ps = (PreparedStatement) statement;
+  ps.execute();
+  int rows = ps.getUpdateCount();
+  Object parameterObject = boundSql.getParameterObject();
+  KeyGenerator keyGenerator = mappedStatement.getKeyGenerator();
+  keyGenerator.processAfter(executor, mappedStatement, ps, parameterObject);
+  return rows;
+}
+```
+
+底层还是调用了`stateMent.execute()`。
+
+**这种是不经过JDK代理的，通过`sqlSession.selectList()`这种方式来调用的**
+
+#### MapperProxy & MapperMethod
+
+如果是通过`sqlSession.getMapper()`这种方式来调用的呢？
+
+原理大致如下 ：
+
+```java
+public class InvocationHandlerTest {
+
+    public static void main(String[] args) {
+        Cat cat = (Cat)Proxy.newProxyInstance(Cat.class.getClassLoader(), new Class[]{Cat.class} , new CatHandler());
+        cat.eat();
+    }
+
+}
+// InvocationHandler，真正执行的是这里！
+class CatHandler implements InvocationHandler{
+    @Override
+    public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+        System.out.println("Abc");
+        return null;
+    }
+}
+
+interface Cat{
+    void eat();
+}
+```
+
+就是JDK动态代理Mapper接口，等到真正调用Mapper接口中的方法时，再InvocationHandler偷天换日，调用`sqlSession`来调用执行语句。
+
+一个Configuration，一个MapperRegisty。
+
+MapperRegistry有个HashMap，HashMap的key是Dao接口的class，value是MapperProxyFactory。
+
+MapperProxyFactory是用来创建MapperProxy，即Mapper接口的代理类的，`sqlSession.getMapper()`返回的就是这个MapperProxy代理类。当执行Mapper接口的方法时，这个代理类会调用`sqlSession`中的方法。根据增删改查的不同来调用不同的方法。
+
+`sqlSession`中有一个MappedStatements的Hashmap，key是 namespace + id（因此namespace如果乱写，对不上Mapper接口的全限定名就会有问题），value就是MappedStatement，MappedStatement就是解析后的sql语句。然后就继续调用Executor来执行sql语句。
+
+
+
+
+
+#### 一级缓存和二级缓存
+
+一级缓存使用的是BaseExecutor的子类（SimpleExecutor、ReuseExecutor、BatchExecutor）
