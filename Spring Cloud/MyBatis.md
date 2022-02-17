@@ -793,3 +793,79 @@ public class ShardPlugin implements Interceptor {
 
 ---
 
+MyBatis可以做一些类型转换，实现TypeHandler即可。
+
+```java
+public interface TypeHandler<T> {
+
+  void setParameter(PreparedStatement ps, int i, T parameter, JdbcType jdbcType) throws SQLException;
+
+  T getResult(ResultSet rs, String columnName) throws SQLException;
+
+  T getResult(ResultSet rs, int columnIndex) throws SQLException;
+
+  T getResult(CallableStatement cs, int columnIndex) throws SQLException;
+
+}
+```
+
+如 ，实现一个枚举类的TypeHandler ：
+
+```java
+public enum SexEnum {
+
+    MALE(1, "男"), FEMALE(0, "女");
+    private int id;
+    private String name;
+
+    SexEnum(int id, String name) {
+        this.id = id;
+        this.name = name;
+    }
+
+    public static SexEnum getSexById(int id) {
+        for (SexEnum sex : SexEnum.values()) {
+            if (sex.getId() == id) {
+                return sex;
+            }
+        }
+        return null;
+    }
+ 	// 省略get、set   
+}
+```
+
+```java
+@MappedTypes(SexEnum.class)
+@MappedJdbcTypes(JdbcType.INTEGER)
+public class SexEnumTypeHandler implements TypeHandler<SexEnum> {
+
+    // 设置参数的方法，i为参数的位置
+    @Override
+    public void setParameter(PreparedStatement ps, int i, SexEnum parameter, JdbcType jdbcType) throws SQLException {
+        ps.setInt(i, parameter.getId());
+    }
+
+    @Override
+    public SexEnum getResult(ResultSet rs, String columnName) throws SQLException {
+        // 设置对象属性
+        int id = rs.getInt(columnName);
+        return SexEnum.getSexById(id);
+    }
+
+    @Override
+    public SexEnum getResult(ResultSet rs, int columnIndex) throws SQLException {
+        int id = rs.getInt(columnIndex);
+        // 返回值设置对象属性
+        return SexEnum.getSexById(id);
+    }
+
+    @Override
+    public SexEnum getResult(CallableStatement cs, int columnIndex) throws SQLException {
+        int id = cs.getInt(columnIndex);
+        // 返回值设置对象属性
+        return SexEnum.getSexById(id);
+    }
+}
+```
+
