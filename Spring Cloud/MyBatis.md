@@ -434,6 +434,8 @@ Executor的实现类 ：
 
 BaseExecutor中实现了一些通用操作，其子类可以直接使用（**模板模式**）。
 
+ReuseExecutor是重用执行器，它会将Statement缓存起来，sql为key，这样就免去重复创建Statement。
+
 每个Executor都有两个`PerpetualCache`类型的属性 :
 
 ```java
@@ -868,4 +870,22 @@ public class SexEnumTypeHandler implements TypeHandler<SexEnum> {
     }
 }
 ```
+
+
+
+### 延迟加载
+
+---
+
+MyBatis支持延迟加载，它的原理是 ：
+
+CGLIB创建代理对象，当真正要使用到属性时，拦截器发现属性是空的，那么就会执行SQL，查到属性并设置进去。
+
+`lazyLoadingEnabled=true`
+
+
+
+### 一对一和一对多
+
+---
 
