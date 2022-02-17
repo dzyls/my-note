@@ -562,7 +562,7 @@ interface Cat{
 
 就是JDK动态代理Mapper接口，等到真正调用Mapper接口中的方法时，再InvocationHandler偷天换日，调用`sqlSession`来调用执行语句。
 
-一个Configuration，一个MapperRegisty。
+Configuration中有一个MapperRegisty。
 
 MapperRegistry有个HashMap，HashMap的key是Dao接口的class，value是MapperProxyFactory。
 
@@ -572,8 +572,224 @@ MapperProxyFactory是用来创建MapperProxy，即Mapper接口的代理类的，
 
 
 
+`org.apache.ibatis.session.Configuration#getMapper`
+
+```java
+protected final MapperRegistry mapperRegistry = new MapperRegistry(this);
+public <T> T getMapper(Class<T> type, SqlSession sqlSession) {
+  return mapperRegistry.getMapper(type, sqlSession);
+}
+
+public MapperRegistry getMapperRegistry() {
+  return mapperRegistry;
+}
+```
+
+
+
+```java
+public class MapperRegistry {
+
+  private final Configuration config;
+    // knownMapper是在扫描Mappper.xml文件时，根据namespace来classForName判断类是否存在，如果存在就放进缓存中
+  private final Map<Class<?>, MapperProxyFactory<?>> knownMappers = new HashMap<>();
+
+  public MapperRegistry(Configuration config) {
+    this.config = config;
+  }
+
+  @SuppressWarnings("unchecked")
+  public <T> T getMapper(Class<T> type, SqlSession sqlSession) {
+    final MapperProxyFactory<T> mapperProxyFactory = (MapperProxyFactory<T>) knownMappers.get(type);
+    if (mapperProxyFactory == null) {
+      throw new BindingException("Type " + type + " is not known to the MapperRegistry.");
+    }
+    try {
+      return mapperProxyFactory.newInstance(sqlSession);
+    } catch (Exception e) {
+      throw new BindingException("Error getting mapper instance. Cause: " + e, e);
+    }
+  }
+    // 省略部分方法
+}
+```
+
+`org.apache.ibatis.binding.MapperProxyFactory#newInstance()`
+
+```java
+protected T newInstance(MapperProxy<T> mapperProxy) {
+    // 返回的是一个代理类，真正执行的是mapperProxy
+  return (T) Proxy.newProxyInstance(mapperInterface.getClassLoader(), new Class[] { mapperInterface }, mapperProxy);
+}
+
+public T newInstance(SqlSession sqlSession) {
+  final MapperProxy<T> mapperProxy = new MapperProxy<T>(sqlSession, mapperInterface, methodCache);
+  return newInstance(mapperProxy);
+}
+```
+
+执行Mapper接口中的方法，实际上是执行MapperProxy中的invoke方法，而这个invoke方法
+
+```java
+@Override
+public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+  if (Object.class.equals(method.getDeclaringClass())) {
+    try {
+      return method.invoke(this, args);
+    } catch (Throwable t) {
+      throw ExceptionUtil.unwrapThrowable(t);
+    }
+  }
+  final MapperMethod mapperMethod = cachedMapperMethod(method);
+    // 实际上会执行mapperMethod的execute
+  return mapperMethod.execute(sqlSession, args);
+}
+```
+
+`org.apache.ibatis.binding.MapperMethod#execute`
+
+```java
+public Object execute(SqlSession sqlSession, Object[] args) {
+  Object result;
+  switch (command.getType()) {
+    case INSERT: {
+   Object param = method.convertArgsToSqlCommandParam(args);
+        // 重点来了，最终还是执行sqlSession的insert方法
+      result = rowCountResult(sqlSession.insert(command.getName(), param));
+      break;
+    }
+    case UPDATE: 
+    
+    // 省略其他方法
+  }
+    //....
+  return result;
+}
+```
+
+
+
+MapperRegisty中有一个Map，key是Mapper接口的class，vlaue是MapperProxyFactory。MapperProxyFactory可以用来创建MapperProxy（JDK动态代理），也就是Mapper接口的代理类。通过`SqlSession.getMapper()`，最终会调用`MapperRegisty.getMapper()`，会从Map中取出MapperProxyFactory对象并创建一个接口代理类。等到真正调用Mapper接口方法的时候，其实是执行MapperProxy的invoke方法，最终还是调用`sqlSession`的增删改查方法。
+
 
 
 #### 一级缓存和二级缓存
 
-一级缓存使用的是BaseExecutor的子类（SimpleExecutor、ReuseExecutor、BatchExecutor）
+一级缓存使用的是BaseExecutor（子类有SimpleExecutor、ReuseExecutor、BatchExecutor），有一个属性是localCache，这个localCache就是把Map封装了。
+
+```java
+public class PerpetualCache implements Cache {
+
+  private final String id;
+
+  private final Map<Object, Object> cache = new HashMap<>();
+}
+```
+
+共用父类，因此三个子类都会使用到。这个Map就是一级缓存，作用域是`sqlSession`。
+
+如果要关闭一级缓存，可以
+
+- 设置`localCacheScope`为`statement`级别。
+
+- 查询语句加randomString = randomString
+- mapper.xml配置该sql的statement为`flushCache=true`
+
+
+
+二级缓存默认是关闭的，一般不打开。打开方式为，设置`cacheEnabled`为`true`
+
+原因是，二级缓存的作用域是`namespace`，如果有两个`namespace`操作了同一张表，那么是有可能出现脏数据的，因此通常都不打开二级缓存。
+
+二级缓存的实现，是利用了装饰器模式，使用了CachingExecutor来包装其他的Executor。
+
+```java
+public Executor newExecutor(Transaction transaction, ExecutorType executorType) {
+  executorType = executorType == null ? defaultExecutorType : executorType;
+  executorType = executorType == null ? ExecutorType.SIMPLE : executorType;
+  Executor executor;
+  if (ExecutorType.BATCH == executorType) {
+    executor = new BatchExecutor(this, transaction);
+  } else if (ExecutorType.REUSE == executorType) {
+    executor = new ReuseExecutor(this, transaction);
+  } else {
+    executor = new SimpleExecutor(this, transaction);
+  }
+    // CachingExecutor包装类
+  if (cacheEnabled) {
+    executor = new CachingExecutor(executor);
+  }
+  executor = (Executor) interceptorChain.pluginAll(executor);
+  return executor;
+}
+```
+
+
+
+由于MyBatis的缓存都是本地的，分布式环境大概率出现不一致。生产环境通常关掉，而是使用Redis这种分布式缓存，可控性更高。
+
+### MyBatis标签
+
+---
+
+除了`select`、`delete`、`update`、`insert`，MyBatis的标签还有 ：
+
+1. **动态标签**
+
+   - choose
+   - when
+   - foreach
+   - if
+   - trim
+   - where
+   - set
+   - otherwise
+   - bind
+
+   动态标签的实现原理是，通过OGNL从SQL参数中计算表达式的值，根据计算的值动态拼接SQL
+
+2. sql片段
+
+   - sql
+   - resultMap，解析到Configuration类中放到resultMaps
+   - parameterMap，解析到Configuration放到parameterMaps
+   - include
+
+
+
+select 、update、delete、insert会被解析为MappedStatement对象，sql会解析为BoundSql对象。
+
+因此，如果想要拿到sql，调用方式为 ：
+
+```java
+sqlSession.getConfiguration().getMappedStatement(sqlId).getSqlSource().getBoundSql().getSql();
+```
+
+
+
+### MyBatis插件原理
+
+---
+
+MyBatis插件的原理是，在Configuration执行创建`paramterHandler`、`resultSetHandler`、`statementHandler`、`Executor`之后，在返回之前，会执行拦截器链。
+
+因此做一个MyBatis插件，就需要实现MyBatis的`Inteceptor`接口。
+
+如果要修改sql语句，就需要使用反射来修改。
+
+
+
+```java
+@Intercepts({@Signature(method = "prepare", type = StatementHandler.class,
+        args = {Connection.class, Integer.class})})
+public class ShardPlugin implements Interceptor {
+    
+}
+```
+
+
+
+### TypeHandler
+
+---
+
