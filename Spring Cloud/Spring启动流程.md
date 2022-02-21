@@ -271,7 +271,7 @@ context.scan("com.xxx.ooo");
 
    `InitDestoryAnnotationBeanPostProcesser`的`buildLifecycleMetadata`中会扫描类中标注了这两个注解的方法 ：
 
-   `buildLifecycleMetadata`会构建一个`LifecycleMeta`对象，
+   `buildLifecycleMetadata`会构建一个`LifecycleMeta`对象，**LifecycleMetadata中有两个List，分别用来存储初始化方法和销毁方法，**
 
    ```java
    private LifecycleMetadata buildLifecycleMetadata(final Class<?> clazz) {
@@ -444,12 +444,103 @@ private void processPropertySource(AnnotationAttributes propertySource) throws I
 
          String resolvedLocation = this.environment.resolveRequiredPlaceholders(location);
          Resource resource = this.resourceLoader.getResource(resolvedLocation);
+       	// 将创建的PropertySource放到Environment中
          addPropertySource(factory.createPropertySource(name, new EncodedResource(resource, encoding)));
      
       }
    }
 }
 ```
+
+`ConfigurationClassParser`对`@PropertySource`的处理就是读取到注解的属性信息，判断文件是否存在，并根据配置封装为`PropertySource`放到`ConfigurableEnvironment`中。
+
+等到`AbstructAutowiredCapableBeanFactory#doCreateBean` 调用`AutowiredAnnotationBeanPostProcesser#postProcessProperties`时，会将value注入到字段中。
+
+
+
+**@ComponentScan**
+
+然后是ComponentScan注解功能的实现 ：
+
+```java
+// 这里的sourceClass是所有被@Configuration标注的类
+Set<AnnotationAttributes> componentScans = AnnotationConfigUtils.attributesForRepeatable(
+      sourceClass.getMetadata(), ComponentScans.class, ComponentScan.class);
+if (!componentScans.isEmpty() &&
+    // 通过@Conditional注解来判断是否要跳过扫描
+      !this.conditionEvaluator.shouldSkip(sourceClass.getMetadata(), ConfigurationPhase.REGISTER_BEAN)) {
+   for (AnnotationAttributes componentScan : componentScans) {
+      // The config class is annotated with @ComponentScan -> perform the scan immediately
+      Set<BeanDefinitionHolder> scannedBeanDefinitions =
+            this.componentScanParser.parse(componentScan, sourceClass.getMetadata().getClassName());
+      // Check the set of scanned definitions for any further config classes and parse recursively if needed
+      for (BeanDefinitionHolder holder : scannedBeanDefinitions) {
+         BeanDefinition bdCand = holder.getBeanDefinition().getOriginatingBeanDefinition();
+         if (bdCand == null) {
+            bdCand = holder.getBeanDefinition();
+         }
+         if (ConfigurationClassUtils.checkConfigurationClassCandidate(bdCand, this.metadataReaderFactory)) {
+            parse(bdCand.getBeanClassName(), holder.getBeanName());
+         }
+      }
+   }
+}
+```
+
+`ConfigurationClassParser`**会扫描所有被@Configuration标注的类**。（其实是`ConfigurationClassPostProcesser`扫描所有的`@Configuration`类，然后依次调用`ConfigurationClassParser#processConfigurationClass`方法）。
+
+
+
+并将每个`@ComponentScan`的属性扫描封装为一个个AnnotationAttributes对象放到集合，然后判断是否要跳过扫描（`@Conditional`注解）。如果要扫描，则遍历这个`AnnotationAttribute`集合，根据`AnnotationAttribute`属性，再去扫描解析这些`BeanDefinition`放到容器。并且如果有哪个`BeanDefinition`也标注了`@Configuration`注解，也会去解析这个ConfigurationClass。
+
+
+
+以此实现，`@ComponentScan`扫描加载类的功能。
+
+总结 ：`ConfigurationClassPostProcesser`会找到所有标注`@Configuration`注解的类，然后判断是否要跳过，如果不跳过则依次扫描这些类，调用`ConfigurationClassParser`去解析这些类。在解析时发现某个类上有`@ComponentScan`时，就会获得注解属性的`value`（即包路径），然后调用`ClassPathBeanDefinitionScaner`去依次扫描这些包路径。扫描完成后，会再次遍历这些类，看有没有`@Configuration`标注的类，如果有，就递归调用再扫描。
+
+> SpringBoot Application的启动注解有@ComponentScan注解和@Configuration注解。
+
+
+
+**@Import**
+
+接下来就是`@Import`注解了 ：
+
+```java
+processImports(configClass, sourceClass, getImports(sourceClass), filter, true);
+```
+
+`@Import`注解比较少用，一般是用`@Configuration`和`@Bean`。
+
+
+
+
+
+**@ImportResource**
+
+再之后就是`@ImportResource`。
+
+```java
+AnnotationAttributes importResource =
+      AnnotationConfigUtils.attributesFor(sourceClass.getMetadata(), ImportResource.class);
+if (importResource != null) {
+   String[] resources = importResource.getStringArray("locations");
+   Class<? extends BeanDefinitionReader> readerClass = importResource.getClass("reader");
+   for (String resource : resources) {
+      String resolvedResource = this.environment.resolveRequiredPlaceholders(resource);
+      configClass.addImportedResource(resolvedResource, readerClass);
+   }
+}
+```
+
+这个就很简单了，就是读取`@ImportSource`的`location`属性，然后依次加载到`ImportResource`里去。
+
+
+
+
+
+
 
 ### BeanFactoryPostProcesser和BeanPostProcesser
 
