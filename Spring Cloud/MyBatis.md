@@ -756,6 +756,8 @@ public Executor newExecutor(Transaction transaction, ExecutorType executorType) 
    - resultMap，解析到Configuration类中放到resultMaps
    - parameterMap，解析到Configuration放到parameterMaps
    - include
+   - assoiciation
+   - collection
 
 
 

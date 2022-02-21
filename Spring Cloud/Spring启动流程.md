@@ -18,7 +18,83 @@ public AnnotationConfigApplicationContext(String... basePackages) {
    // 刷新操作
    refresh();
 }
+
+// 初始化reader、sacnner
+public AnnotationConfigApplicationContext(DefaultListableBeanFactory beanFactory) {
+	super(beanFactory);
+	this.reader = new AnnotatedBeanDefinitionReader(this);
+	this.scanner = new ClassPathBeanDefinitionScanner(this);
+}
 ```
+
+在AnnoationConfigApplicationContext中，会首先进行reader和scanner的初始化。在初始化reader和scanner时，会将自己当做BeanDefinitionRegistry传进构造参数中去。
+
+两者的区别见下：
+
+[Reader和Scanner的区别]: #AnnotationBeanDefinationReader和ClassPathBeanDefinitionScanner
+
+
+
+初始化完Reader和Scanner之后，就会执行扫描或注册，根据传参的不同，执行扫描或注册。
+
+```java
+public AnnotationConfigApplicationContext(Class<?>... componentClasses) {
+   this();
+   // 注册指定的类
+   register(componentClasses);
+   refresh();
+}
+
+public AnnotationConfigApplicationContext(String... basePackages) {
+   this();
+   // 扫描指定包路径
+   scan(basePackages);
+   refresh();
+}
+```
+
+如常用的调用方式 ：
+
+```java
+AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext("com.dzyls.xxx.demo");
+```
+
+但无论是扫描或者是注册，都会将要加载的类封装为BeanDefinition，每扫描一个bean都会放入当前容器中的。
+
+```java
+protected Set<BeanDefinitionHolder> doScan(String... basePackages) {
+   Assert.notEmpty(basePackages, "At least one base package must be specified");
+   Set<BeanDefinitionHolder> beanDefinitions = new LinkedHashSet<>();
+   for (String basePackage : basePackages) {
+      Set<BeanDefinition> candidates = findCandidateComponents(basePackage);
+      for (BeanDefinition candidate : candidates) {
+         ScopeMetadata scopeMetadata = this.scopeMetadataResolver.resolveScopeMetadata(candidate);
+         candidate.setScope(scopeMetadata.getScopeName());
+         String beanName = this.beanNameGenerator.generateBeanName(candidate, this.registry);
+         if (candidate instanceof AbstractBeanDefinition) {
+            postProcessBeanDefinition((AbstractBeanDefinition) candidate, beanName);
+         }
+         if (candidate instanceof AnnotatedBeanDefinition) {
+            AnnotationConfigUtils.processCommonDefinitionAnnotations((AnnotatedBeanDefinition) candidate);
+         }
+         if (checkCandidate(beanName, candidate)) {
+            BeanDefinitionHolder definitionHolder = new BeanDefinitionHolder(candidate, beanName);
+            definitionHolder =
+                  AnnotationConfigUtils.applyScopedProxyMode(scopeMetadata, definitionHolder, this.registry);
+            beanDefinitions.add(definitionHolder);
+            // 放入当前的容器中。this.registry就是当前容器，在ClassPathBeanDefinition构造函数中，
+             //AnnotationConfigurationApplicationContext将自己当做参数传进来了。
+            registerBeanDefinition(definitionHolder, this.registry);
+         }
+      }
+   }
+   return beanDefinitions;
+}
+```
+
+将所有BeanDefinition扫描到容器后，就开始执行刷新了，刷新也是最为复杂的一步。
+
+
 
 ```java
 @Override
@@ -94,133 +170,366 @@ public void refresh() throws BeansException, IllegalStateException {
 
 
 
-### @Autowired的实现
+### AnnotationBeanDefinationReader和ClassPathBeanDefinitionScanner
 
 ---
 
-`@Autowired`注解是根据类型注入的注解，也是比较常用的注解。
-
-其实现的原理在`AutowiredAnnoationBeanPostProcesser`，从名字上看，这个类是一个`BeanPostProcesser`。
+`AnnotatedBeanDefinitionReader`
 
 ```java
-public class AutowiredAnnotationBeanPostProcessor implements SmartInstantiationAwareBeanPostProcessor,
-      MergedBeanDefinitionPostProcessor, PriorityOrdered, BeanFactoryAware {
-          
+public AnnotatedBeanDefinitionReader(BeanDefinitionRegistry registry) {
+   this(registry, getOrCreateEnvironment(registry));
+}
+
+public AnnotatedBeanDefinitionReader(BeanDefinitionRegistry registry, Environment environment) {
+   this.registry = registry;
+   this.conditionEvaluator = new ConditionEvaluator(registry, environment, null);
+   // 会放一些后置处理器，用于实现一些功能。如ConfigurationClassPostProcessor、AutowiredAnnotationBeanPostProcessor，就是实现@Configuration和@Autowired注解的后置处理器。
+   AnnotationConfigUtils.registerAnnotationConfigProcessors(this.registry);
+}
+```
+
+在初始化`AnnotationBeanDefinitionReader`时，会放一些后置处理器（如ConfigurationClassPostProcesser、AutowiredAnnotationBeanPostProcesser、CommonAnnotationBeanPostProcesser），用来实现一些注解的功能。
+
+ 
+
+`ClassPathBeanDefinitionScanner`的初始化则比较简单。
+
+`AnnotationBeanDefinationReader`和`ClassPathBeanDefinitionScanner`两者可以相互替换，从名字上就可以看出区别 ：
+
+- `AnnotationBeanDefinationReader`是读取单个类的。
+- `ClassPathBeanDefinitionScanner`是扫描包路径下的。
+
+
+
+如果要手动加载某个类或者某个包，可以使用`context.registerBean`或`context.scan`来加载 ：
+
+```java
+AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext("com.dzyls.learn.springframework");
+// 加载指定类
+context.registerBean(HelloService.class);
+HelloService service = context.getBean("helloService", HelloService.class);
+service.sayHello();
+// 扫描某个包
+context.scan("com.xxx.ooo");
+```
+
+
+
+### BeanDefinition
+
+---
+
+`BeanDefinition`是对要加载的类的封装，会记录一些属性，如 ：
+
+- 是否懒加载
+
+- 是否是单例、是不是多例的
+
+- 初始化方法名称、销毁方法名称（`@Bean(initMethod="init",destoryMethod="destoryMethod")`）
+
+  > @PostConstruct和@PreDestory是JSR-250标准，实现原理基于CommonAnnotationBeanPostProcesser，BeanDefinition类中记录的不是这两个注解标注的方法。而是注解@Bean指定的initMethod和destoryMethod方法。
+
+- 是否是Primary的
+
+等等。
+
+
+
+为什么要将类封装为BeanDefinition ？
+
+如果不封装起来，那么要使用到这些属性时，就需要去类上扫描了。不如初始化时直接一次性扫描封装起来，以供后面使用。
+
+
+
+
+
+### @PostConstruct和@PreDestory
+
+---
+
+@PostConstruct用来标注初始化方法，如init。
+
+@PreDestory用来标注销毁方法。
+
+这两个注解的后置处理器都是在`AnnotationBeanDefinitionReader`在初始化时加载`CommonAnnotationBeanPostProcesser`来实现的，其真正的实现是在其父类`InitDestoryAnnotationBeanPostProcesser`中实现的。
+
+1. `CommonAnnotationBeanPostProcesser`在初始化时，会设置初始化注解和销毁方法注解 ：
+
+   ```java
+   public CommonAnnotationBeanPostProcessor() {
+   
+      // 设置初始化方法注解为 @PostConstruct注解
+      setInitAnnotationType(PostConstruct.class);
+       //设置销毁方法注解为 @PreDestory注解
+      setDestroyAnnotationType(PreDestroy.class);
+   
+   }
+   ```
+
+2. 这两个属性，会在父类`InitDestoryAnnotationBeanPostProcesser`用到。
+
+   `InitDestoryAnnotationBeanPostProcesser`的`buildLifecycleMetadata`中会扫描类中标注了这两个注解的方法 ：
+
+   `buildLifecycleMetadata`会构建一个`LifecycleMeta`对象，
+
+   ```java
+   private LifecycleMetadata buildLifecycleMetadata(final Class<?> clazz) {
+       
+      List<LifecycleElement> initMethods = new ArrayList<>();
+      List<LifecycleElement> destroyMethods = new ArrayList<>();
+      Class<?> targetClass = clazz;
+   
+      do {
+         final List<LifecycleElement> currInitMethods = new ArrayList<>();
+         final List<LifecycleElement> currDestroyMethods = new ArrayList<>();
+   
+         ReflectionUtils.doWithLocalMethods(targetClass, method -> {
+            if (this.initAnnotationType != null && method.isAnnotationPresent(this.initAnnotationType)) {
+               LifecycleElement element = new LifecycleElement(method);
+               currInitMethods.add(element);
+            }
+            if (this.destroyAnnotationType != null && method.isAnnotationPresent(this.destroyAnnotationType)) {
+               currDestroyMethods.add(new LifecycleElement(method));
+            }
+         });
+   
+         initMethods.addAll(0, currInitMethods);
+         destroyMethods.addAll(currDestroyMethods);
+         targetClass = targetClass.getSuperclass();
       }
-```
+      while (targetClass != null && targetClass != Object.class);
+   
+      return (initMethods.isEmpty() && destroyMethods.isEmpty() ? this.emptyLifecycleMetadata :
+            new LifecycleMetadata(clazz, initMethods, destroyMethods));
+   }
+   ```
 
-其中AutowiredAnnoationBeanPostProcesser实现了 MergedBeanDefinitionPostProcesser中的PostPrcessMergedBeanDefinition方法 ：
+   Spring可以通过这个`LifecycleMetadata`对象来调用初始化方法和销毁方法 ：
 
-```java
-@Override
-public void postProcessMergedBeanDefinition(RootBeanDefinition beanDefinition, Class<?> beanType, String beanName) {
-   InjectionMetadata metadata = findAutowiringMetadata(beanName, beanType, null);
-   metadata.checkConfigMembers(beanDefinition);
-}
-```
-
-通过这个方法，来扫描类中的方法和属性，并封装为InjectionMetadata。
-
-```java
-private InjectionMetadata findAutowiringMetadata(String beanName, Class<?> clazz, @Nullable PropertyValues pvs) {
-
-   String cacheKey = (StringUtils.hasLength(beanName) ? beanName : clazz.getName());
-
-   InjectionMetadata metadata = this.injectionMetadataCache.get(cacheKey);
-   if (InjectionMetadata.needsRefresh(metadata, clazz)) {
-      synchronized (this.injectionMetadataCache) {
-         metadata = this.injectionMetadataCache.get(cacheKey);
-         if (InjectionMetadata.needsRefresh(metadata, clazz)) {
-            if (metadata != null) {
-               metadata.clear(pvs);
+   ```java
+   public void invokeInitMethods(Object target, String beanName) throws Throwable {
+      Collection<LifecycleElement> checkedInitMethods = this.checkedInitMethods;
+      Collection<LifecycleElement> initMethodsToIterate =
+            (checkedInitMethods != null ? checkedInitMethods : this.initMethods);
+      if (!initMethodsToIterate.isEmpty()) {
+         for (LifecycleElement element : initMethodsToIterate) {
+            if (logger.isTraceEnabled()) {
+               logger.trace("Invoking init method on bean '" + beanName + "': " + element.getMethod());
             }
-             // 关注重点
-            metadata = buildAutowiringMetadata(clazz);
-             // 重点在上面
-            this.injectionMetadataCache.put(cacheKey, metadata);
+            element.invoke(target);
          }
       }
    }
-   return metadata;
-}
-
-private InjectionMetadata buildAutowiringMetadata(Class<?> clazz) {
-   if (!AnnotationUtils.isCandidateClass(clazz, this.autowiredAnnotationTypes)) {
-      return InjectionMetadata.EMPTY;
+   
+   public void invokeDestroyMethods(Object target, String beanName) throws Throwable {
+      Collection<LifecycleElement> checkedDestroyMethods = this.checkedDestroyMethods;
+      Collection<LifecycleElement> destroyMethodsToUse =
+            (checkedDestroyMethods != null ? checkedDestroyMethods : this.destroyMethods);
+      if (!destroyMethodsToUse.isEmpty()) {
+         for (LifecycleElement element : destroyMethodsToUse) {
+            if (logger.isTraceEnabled()) {
+               logger.trace("Invoking destroy method on bean '" + beanName + "': " + element.getMethod());
+            }
+            element.invoke(target);
+         }
+      }
    }
+   ```
 
-   List<InjectionMetadata.InjectedElement> elements = new ArrayList<>();
-   Class<?> targetClass = clazz;
+3. 找到方法就很简单了，`InitDestoryAnnotationBeanPostDefinition`会在bean初始化之前调用init方法 ：
 
-   do {
-      final List<InjectionMetadata.InjectedElement> currElements = new ArrayList<>();
-	// 扫描所有的属性
-      ReflectionUtils.doWithLocalFields(targetClass, field -> {
-         MergedAnnotation<?> ann = findAutowiredAnnotation(field);
-         if (ann != null) {
-            if (Modifier.isStatic(field.getModifiers())) {
-               if (logger.isInfoEnabled()) {
-                  logger.info("Autowired annotation is not supported on static fields: " + field);
-               }
-               return;
-            }
-            boolean required = determineRequiredStatus(ann);
-            currElements.add(new AutowiredFieldElement(field, required));
-         }
-      });
-	// 扫描所有的方法
-      ReflectionUtils.doWithLocalMethods(targetClass, method -> {
-         Method bridgedMethod = BridgeMethodResolver.findBridgedMethod(method);
-         if (!BridgeMethodResolver.isVisibilityBridgeMethodPair(method, bridgedMethod)) {
-            return;
-         }
-         MergedAnnotation<?> ann = findAutowiredAnnotation(bridgedMethod);
-         if (ann != null && method.equals(ClassUtils.getMostSpecificMethod(method, clazz))) {
-            if (Modifier.isStatic(method.getModifiers())) {
-               if (logger.isInfoEnabled()) {
-                  logger.info("Autowired annotation is not supported on static methods: " + method);
-               }
-               return;
-            }
-            if (method.getParameterCount() == 0) {
-               if (logger.isInfoEnabled()) {
-                  logger.info("Autowired annotation should only be used on methods with parameters: " +
-                        method);
-               }
-            }
-            boolean required = determineRequiredStatus(ann);
-            PropertyDescriptor pd = BeanUtils.findPropertyForMethod(bridgedMethod, clazz);
-            currElements.add(new AutowiredMethodElement(method, required, pd));
-         }
-      });
-
-      elements.addAll(0, currElements);
-      // 从当前类，一直扫描到父类，直到Object（父类的属性也会被注入）
-      targetClass = targetClass.getSuperclass();
+   ```java
+   private final transient Map<Class<?>, LifecycleMetadata> lifecycleMetadataCache = new ConcurrentHashMap<>(256);
+   
+   @Override
+   public Object postProcessBeforeInitialization(Object bean, String beanName) throws BeansException {
+      LifecycleMetadata metadata = findLifecycleMetadata(bean.getClass());
+      try {
+         metadata.invokeInitMethods(bean, beanName);
+      }
+     	// 省略
+      return bean;
    }
-   while (targetClass != null && targetClass != Object.class);
+   
+   
+   @Override
+   public void postProcessBeforeDestruction(Object bean, String beanName) throws BeansException {
+      LifecycleMetadata metadata = findLifecycleMetadata(bean.getClass());
+      try {
+         metadata.invokeDestroyMethods(bean, beanName);
+      }
+   	// 省略
+   }
+   ```
 
-   return InjectionMetadata.forElements(elements, clazz);
+   在销毁前调用Destory方法。
+
+   调用参数是bean，通过bean.getClass找到缓存中缓存的`LifecycleMetadata`。
+
+**总结 ：**
+
+`@PostConstruct`和`@PreDestory`注解的实现原理依赖于`CommonAnnotationBeanPostProcesser`和其父类`InitDestoryAnnotationBeanPostProcesser`，`InitDestoryAnnoationBeanPostProcesser`会扫描被`@PostConstruct`和`@PreDestory`标注的方法，并封装为LifecycleMetadata对象，在Bean初始化之前调用初始化方法，在Bean销毁前调用销毁方法。
+
+
+
+### @Configuration、@Component、@ComponentScan的实现原理
+
+---
+
+在Spring Boot中，我们通常会使用`@Configuration`注解来配置一个配置类，其实现的原理是在创建`AnntationBeanDefinitionPostProcesser`时，向容器中添加的`ConfigurationClassPostProcesser`来实现的。
+
+`ConfigurationClassPostProcesser`实现了`BeanDefinitionRegistyPostProcesser`，就是一个BeanFactory后置处理器。在容器刷新时会调用BeanFactory后置处理方法。
+
+在`ConfigurationClassPostProcesser`会调用一个解析器 `ConfigurationClassParser`用来解析Configuration类。
+
+`ConfigurationClassParser`与很多功能有关，是一个非常关键的一个解析类 ：
+
+- @Componet
+- 解析@ComponetScan信息
+- @Import
+- @ImportResource
+- 解析@PropertySource的配置信息
+- 判断该类是否要跳过（`@Conditional`）
+
+BeanFactory后置处理器最终会走到 `ConfigurationClassParser#doProcessConfigurationClass`，在这个方法中会 ：
+
+**@Component**
+
+```java
+protected final SourceClass doProcessConfigurationClass(
+      ConfigurationClass configClass, SourceClass sourceClass, Predicate<String> filter){
+
+   if (configClass.getMetadata().isAnnotated(Component.class.getName())) {
+      // Recursively process any member (nested) classes first
+      processMemberClasses(configClass, sourceClass, filter);
+   }
+	// 省略后续步骤
 }
 ```
 
 
 
-那代码是如何运行到AutowiredAnnoationBeanPostProcesser的呢？
+**@PropertySource**
 
-可以猜测一下，什么时候会对类需要注入的属性进行扫描呢？
+```java
+for (AnnotationAttributes propertySource : AnnotationConfigUtils.attributesForRepeatable(
+      sourceClass.getMetadata(), PropertySources.class,
+      org.springframework.context.annotation.PropertySource.class)) {
+   if (this.environment instanceof ConfigurableEnvironment) {
+      // 读取propertySource注解
+      processPropertySource(propertySource);
+   }
+}
+```
 
-答案是在扫描到要加载的Bean之后，才会去扫描这些Bean中需要注入的属性。那就是在容器启动时，即容器的刷新方法（refresh)。
+```java
+private void processPropertySource(AnnotationAttributes propertySource) throws IOException {
+    // 读取注解中属性的值
+   String name = propertySource.getString("name");
+   if (!StringUtils.hasLength(name)) {
+      name = null;
+   }
+   String encoding = propertySource.getString("encoding");
+   if (!StringUtils.hasLength(encoding)) {
+      encoding = null;
+   }
+   String[] locations = propertySource.getStringArray("value");
 
-refresh方法在`AbstractApplicationContext`抽象父类中（模板方法模式），在容器刷新时，会执行一个方法叫 ：`registerBeanPostProcessors`。
+   Class<? extends PropertySourceFactory> factoryClass = propertySource.getClass("factory");
+   PropertySourceFactory factory = (factoryClass == PropertySourceFactory.class ?
+         DEFAULT_PROPERTY_SOURCE_FACTORY : BeanUtils.instantiateClass(factoryClass));
+
+   for (String location : locations) {
+
+         String resolvedLocation = this.environment.resolveRequiredPlaceholders(location);
+         Resource resource = this.resourceLoader.getResource(resolvedLocation);
+         addPropertySource(factory.createPropertySource(name, new EncodedResource(resource, encoding)));
+     
+      }
+   }
+}
+```
+
+### BeanFactoryPostProcesser和BeanPostProcesser
+
+---
+
+`BeanFactoryPostProcesser`是BeanFactory的后置处理器，在容器刷新时执行。
+
+容器刷新是在类`AbstractApplicationContext#refresh`方法中。
+
+`org.springframework.context.support.AbstractApplicationContext#refresh`
 
 ```java
 @Override
 public void refresh() throws BeansException, IllegalStateException {
    synchronized (this.startupShutdownMonitor) {
-		// 省略部分重点
-         registerBeanPostProcessors(beanFactory);
-         beanPostProcess.end();
+		
+         //省略部分代码
+       	// 留给子类实现
+         postProcessBeanFactory(beanFactory);
+
+         // Invoke factory processors registered as beans in the context.
+         invokeBeanFactoryPostProcessors(beanFactory);
+       	// 注册BeanPostProcesser，在Bean创建前后调用指定方法
+       	registerBeanPostProcessors(beanFactory);
 ```
 
-这个方法会执行所有的BeanPostProcessor。
+
+
+`BeanFactoryPostProcesser`只有一个方法 ：`postProcessBeanFactory`，
+
+常用子类有 `BeanDefinitionRegistyPostProcesser`，而`ConfigurationClassPostProcesser`就是实现了这个子类。
+
+因此当容器刷新时，会调用`BeanFacotryPostProcesser`，也就是会调用`ConfigurationClassPostProcesser#postProcessBeanFactory`。
+
+
+
+
+
+### Spring Boot启动流程
+
+---
+
+```java
+public ConfigurableApplicationContext run(String... args) {
+   StopWatch stopWatch = new StopWatch();
+   stopWatch.start();
+   DefaultBootstrapContext bootstrapContext = createBootstrapContext();
+   ConfigurableApplicationContext context = null;
+   configureHeadlessProperty();
+   SpringApplicationRunListeners listeners = getRunListeners(args);
+   listeners.starting(bootstrapContext, this.mainApplicationClass);
+   try {
+      ApplicationArguments applicationArguments = new DefaultApplicationArguments(args);
+      ConfigurableEnvironment environment = prepareEnvironment(listeners, bootstrapContext, applicationArguments);
+      configureIgnoreBeanInfo(environment);
+      Banner printedBanner = printBanner(environment);
+      context = createApplicationContext();
+      context.setApplicationStartup(this.applicationStartup);
+      prepareContext(bootstrapContext, context, environment, listeners, applicationArguments, printedBanner);
+      refreshContext(context);
+      afterRefresh(context, applicationArguments);
+      stopWatch.stop();
+      if (this.logStartupInfo) {
+         new StartupInfoLogger(this.mainApplicationClass).logStarted(getApplicationLog(), stopWatch);
+      }
+      listeners.started(context);
+      callRunners(context, applicationArguments);
+   }
+   catch (Throwable ex) {
+      handleRunFailure(context, ex, listeners);
+      throw new IllegalStateException(ex);
+   }
+
+   try {
+      listeners.running(context);
+   }
+   catch (Throwable ex) {
+      handleRunFailure(context, ex, null);
+      throw new IllegalStateException(ex);
+   }
+   return context;
+}
+```
