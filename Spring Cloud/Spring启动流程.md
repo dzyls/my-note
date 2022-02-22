@@ -189,7 +189,7 @@ public AnnotatedBeanDefinitionReader(BeanDefinitionRegistry registry, Environmen
 }
 ```
 
-在初始化`AnnotationBeanDefinitionReader`时，会放一些后置处理器（如ConfigurationClassPostProcesser、AutowiredAnnotationBeanPostProcesser、CommonAnnotationBeanPostProcesser），用来实现一些注解的功能。
+在初始化`AnnotationBeanDefinitionReader`时，会放一些后置处理器（如ConfigurationClassPostProcessor、AutowiredAnnotationBeanPostProcessor、CommonAnnotationBeanPostProcessor），用来实现一些注解的功能。
 
  
 
@@ -228,19 +228,15 @@ context.scan("com.xxx.ooo");
 
 - 初始化方法名称、销毁方法名称（`@Bean(initMethod="init",destoryMethod="destoryMethod")`）
 
-  > @PostConstruct和@PreDestory是JSR-250标准，实现原理基于CommonAnnotationBeanPostProcesser，BeanDefinition类中记录的不是这两个注解标注的方法。而是注解@Bean指定的initMethod和destoryMethod方法。
+  > @PostConstruct和@PreDestory是JSR-250标准，实现原理基于CommonAnnotationBeanPostProcessor，BeanDefinition类中记录的不是这两个注解标注的方法。而是注解@Bean指定的initMethod和destoryMethod方法。
 
 - 是否是Primary的
 
 等等。
 
-
-
 为什么要将类封装为BeanDefinition ？
 
 如果不封装起来，那么要使用到这些属性时，就需要去类上扫描了。不如初始化时直接一次性扫描封装起来，以供后面使用。
-
-
 
 
 
@@ -252,9 +248,9 @@ context.scan("com.xxx.ooo");
 
 @PreDestory用来标注销毁方法。
 
-这两个注解的后置处理器都是在`AnnotationBeanDefinitionReader`在初始化时加载`CommonAnnotationBeanPostProcesser`来实现的，其真正的实现是在其父类`InitDestoryAnnotationBeanPostProcesser`中实现的。
+这两个注解的后置处理器都是在`AnnotationBeanDefinitionReader`在初始化时加载`CommonAnnotationBeanPostProcessor`来实现的，其真正的实现是在其父类`InitDestoryAnnotationBeanPostProcessor`中实现的。
 
-1. `CommonAnnotationBeanPostProcesser`在初始化时，会设置初始化注解和销毁方法注解 ：
+1. `CommonAnnotationBeanPostProcessor`在初始化时，会设置初始化注解和销毁方法注解 ：
 
    ```java
    public CommonAnnotationBeanPostProcessor() {
@@ -267,9 +263,9 @@ context.scan("com.xxx.ooo");
    }
    ```
 
-2. 这两个属性，会在父类`InitDestoryAnnotationBeanPostProcesser`用到。
+2. 这两个属性，会在父类`InitDestoryAnnotationBeanPostProcessor`用到。
 
-   `InitDestoryAnnotationBeanPostProcesser`的`buildLifecycleMetadata`中会扫描类中标注了这两个注解的方法 ：
+   `InitDestoryAnnotationBeanPostProcessor`的`buildLifecycleMetadata`中会扫描类中标注了这两个注解的方法 ：
 
    `buildLifecycleMetadata`会构建一个`LifecycleMeta`对象，**LifecycleMetadata中有两个List，分别用来存储初始化方法和销毁方法，**
 
@@ -369,19 +365,19 @@ context.scan("com.xxx.ooo");
 
 **总结 ：**
 
-`@PostConstruct`和`@PreDestory`注解的实现原理依赖于`CommonAnnotationBeanPostProcesser`和其父类`InitDestoryAnnotationBeanPostProcesser`，`InitDestoryAnnoationBeanPostProcesser`会扫描被`@PostConstruct`和`@PreDestory`标注的方法，并封装为LifecycleMetadata对象，在Bean初始化之前调用初始化方法，在Bean销毁前调用销毁方法。
+`@PostConstruct`和`@PreDestory`注解的实现原理依赖于`CommonAnnotationBeanPostProcessor`和其父类`InitDestoryAnnotationBeanPostProcessor`，`InitDestoryAnnoationBeanPostProcessor`会扫描被`@PostConstruct`和`@PreDestory`标注的方法，并封装为LifecycleMetadata对象，在Bean初始化之前调用初始化方法，在Bean销毁前调用销毁方法。
 
 
 
-### @Configuration、@Component、@ComponentScan的实现原理
+### @Configuration注解及相关注解的实现原理
 
 ---
 
-在Spring Boot中，我们通常会使用`@Configuration`注解来配置一个配置类，其实现的原理是在创建`AnntationBeanDefinitionPostProcesser`时，向容器中添加的`ConfigurationClassPostProcesser`来实现的。
+在Spring Boot中，我们通常会使用`@Configuration`注解来配置一个配置类，其实现的原理是在创建`AnntationBeanDefinitionPostProcessor`时，向容器中添加的`ConfigurationClassPostProcessor`来实现的。
 
-`ConfigurationClassPostProcesser`实现了`BeanDefinitionRegistyPostProcesser`，就是一个BeanFactory后置处理器。在容器刷新时会调用BeanFactory后置处理方法。
+`ConfigurationClassPostProcessor`实现了`BeanDefinitionRegistyPostProcessor`，就是一个BeanFactory后置处理器。在容器刷新时会调用BeanFactory后置处理方法。
 
-在`ConfigurationClassPostProcesser`会调用一个解析器 `ConfigurationClassParser`用来解析Configuration类。
+在`ConfigurationClassPostProcessor`会调用一个解析器 `ConfigurationClassParser`用来解析Configuration类。
 
 `ConfigurationClassParser`与很多功能有关，是一个非常关键的一个解析类 ：
 
@@ -391,10 +387,11 @@ context.scan("com.xxx.ooo");
 - @ImportResource
 - 解析@PropertySource的配置信息
 - 判断该类是否要跳过（`@Conditional`）
+- `@Bean`注解是
 
 BeanFactory后置处理器最终会走到 `ConfigurationClassParser#doProcessConfigurationClass`，在这个方法中会 ：
 
-**@Component**
+#### **@Component**
 
 ```java
 protected final SourceClass doProcessConfigurationClass(
@@ -410,7 +407,7 @@ protected final SourceClass doProcessConfigurationClass(
 
 
 
-**@PropertySource**
+#### **@PropertySource**
 
 ```java
 for (AnnotationAttributes propertySource : AnnotationConfigUtils.attributesForRepeatable(
@@ -454,11 +451,11 @@ private void processPropertySource(AnnotationAttributes propertySource) throws I
 
 `ConfigurationClassParser`对`@PropertySource`的处理就是读取到注解的属性信息，判断文件是否存在，并根据配置封装为`PropertySource`放到`ConfigurableEnvironment`中。
 
-等到`AbstructAutowiredCapableBeanFactory#doCreateBean` 调用`AutowiredAnnotationBeanPostProcesser#postProcessProperties`时，会将value注入到字段中。
+等到`AbstructAutowiredCapableBeanFactory#doCreateBean` 调用`AutowiredAnnotationBeanPostProcessor#postProcessProperties`时，会将value注入到字段中。
 
 
 
-**@ComponentScan**
+#### **@ComponentScan**
 
 然后是ComponentScan注解功能的实现 ：
 
@@ -487,7 +484,7 @@ if (!componentScans.isEmpty() &&
 }
 ```
 
-`ConfigurationClassParser`**会扫描所有被@Configuration标注的类**。（其实是`ConfigurationClassPostProcesser`扫描所有的`@Configuration`类，然后依次调用`ConfigurationClassParser#processConfigurationClass`方法）。
+`ConfigurationClassParser`**会扫描所有被@Configuration标注的类**。（其实是`ConfigurationClassPostProcessor`扫描所有的`@Configuration`类，然后依次调用`ConfigurationClassParser#processConfigurationClass`方法）。
 
 
 
@@ -497,13 +494,13 @@ if (!componentScans.isEmpty() &&
 
 以此实现，`@ComponentScan`扫描加载类的功能。
 
-总结 ：`ConfigurationClassPostProcesser`会找到所有标注`@Configuration`注解的类，然后判断是否要跳过，如果不跳过则依次扫描这些类，调用`ConfigurationClassParser`去解析这些类。在解析时发现某个类上有`@ComponentScan`时，就会获得注解属性的`value`（即包路径），然后调用`ClassPathBeanDefinitionScaner`去依次扫描这些包路径。扫描完成后，会再次遍历这些类，看有没有`@Configuration`标注的类，如果有，就递归调用再扫描。
+总结 ：`ConfigurationClassPostProcessor`会找到所有标注`@Configuration`注解的类，然后判断是否要跳过，如果不跳过则依次扫描这些类，调用`ConfigurationClassParser`去解析这些类。在解析时发现某个类上有`@ComponentScan`时，就会获得注解属性的`value`（即包路径），然后调用`ClassPathBeanDefinitionScaner`去依次扫描这些包路径。扫描完成后，会再次遍历这些类，看有没有`@Configuration`标注的类，如果有，就递归调用再扫描。
 
 > SpringBoot Application的启动注解有@ComponentScan注解和@Configuration注解。
 
 
 
-**@Import**
+#### **@Import**
 
 接下来就是`@Import`注解了 ：
 
@@ -517,7 +514,7 @@ processImports(configClass, sourceClass, getImports(sourceClass), filter, true);
 
 
 
-**@ImportResource**
+#### **@ImportResource**
 
 再之后就是`@ImportResource`。
 
@@ -538,15 +535,57 @@ if (importResource != null) {
 
 
 
+#### **@Bean**
+
+获取`@Configuration`类中被`@Bean`标注的方法，放到`ConfigurationClass`的`BeanMethod`属性中。
+
+```java
+Set<MethodMetadata> beanMethods = retrieveBeanMethodMetadata(sourceClass);
+for (MethodMetadata methodMetadata : beanMethods) {
+   configClass.addBeanMethod(new BeanMethod(methodMetadata, configClass));
+}
+```
+
+然后会扫描父接口的default方法，如果父接口default方法也标注了`@bean`注解，也会被加载到容器。
+
+```java
+// Process default methods on interfaces
+processInterfaces(configClass, sourceClass);
+```
 
 
 
+这些Bean方法，最后会在`BeanDefinitionRegistyPostPrcocesser`的`postProcessBeanDefinitionRegisty`中（`ConfigurationClassPostProcessor#postProcessBeanDefinitionRegisty`）封装为BeanDefinition，放到容器中。
 
-### BeanFactoryPostProcesser和BeanPostProcesser
+
+
+最后是父类的方法：
+
+```java
+// Process superclass, if any
+if (sourceClass.getMetadata().hasSuperClass()) {
+   String superclass = sourceClass.getMetadata().getSuperClassName();
+   if (superclass != null && !superclass.startsWith("java") &&
+         !this.knownSuperclasses.containsKey(superclass)) {
+      this.knownSuperclasses.put(superclass, configClass);
+      // Superclass found, return its annotation metadata and recurse
+      return sourceClass.getSuperClass();
+   }
+}
+
+// No superclass -> processing is complete
+return null;
+```
+
+由于是递归的，因此只要父类不为空，那么就会一直扫。直到父类到的全限定名以java开头。
+
+
+
+### BeanFactoryPostProcessor和BeanPostProcessor
 
 ---
 
-`BeanFactoryPostProcesser`是BeanFactory的后置处理器，在容器刷新时执行。
+`BeanFactoryPostProcessor`是BeanFactory的后置处理器，在容器刷新时执行。
 
 容器刷新是在类`AbstractApplicationContext#refresh`方法中。
 
@@ -563,17 +602,152 @@ public void refresh() throws BeansException, IllegalStateException {
 
          // Invoke factory processors registered as beans in the context.
          invokeBeanFactoryPostProcessors(beanFactory);
-       	// 注册BeanPostProcesser，在Bean创建前后调用指定方法
+       	// 注册BeanPostProcessor，在Bean创建前后调用指定方法
        	registerBeanPostProcessors(beanFactory);
 ```
 
+`BeanFactoryPostProcessor`只有一个方法 ：`postProcessBeanFactory`，
+
+常用子接口有 `BeanDefinitionRegistyPostProcessor`，而`ConfigurationClassPostProcessor`就是实现了这个子接口。
+
+因此当容器刷新时，会调用`BeanFacotryPostProcessor`，也就是会调用`ConfigurationClassPostProcessor#postProcessBeanFactory`。
 
 
-`BeanFactoryPostProcesser`只有一个方法 ：`postProcessBeanFactory`，
 
-常用子类有 `BeanDefinitionRegistyPostProcesser`，而`ConfigurationClassPostProcesser`就是实现了这个子类。
+### 后置处理器
 
-因此当容器刷新时，会调用`BeanFacotryPostProcesser`，也就是会调用`ConfigurationClassPostProcesser#postProcessBeanFactory`。
+---
+
+后置处理器实现了很多功能，如：
+
+#### BeanPostProcessor
+
+- `InitDestoryAnnotationBeanPostProcessor`实现了`PostConstruct`和`PreDestory`注解
+- `ApplicationContextAwareProcessor`实现Aware接口调用，如`ApplicationContextAware`接口的实现。
+
+
+
+`BeanPostProcessor`的接口的方法，在bean创建前后调用。
+
+详见`org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory#doCreateBean`。
+
+
+
+#### BeanFactoryPostProcessor
+
+
+
+`BeanFactoryPostProcessor`接口的方法，在容器刷新时调用。
+
+
+
+
+
+### Aware接口的实现
+
+---
+
+我们常用的`Aware`接口有 ：
+
+- `ApplicationContextAware`接口，用于获取ApplicationContext的
+- `BeanNameAware`接口，用户获取`BeanName`的
+- `BeanFactoryAware`接口，用于获取BeanFactory
+
+
+
+#### ApplicationContextAware
+
+ApplicationContextAware接口的功能实现是依赖于`ApplicaitonContextAwareProcessor`。
+
+`ApplicationContextAwareProcessor`其实是一个Bean后置处理器，在Bean初始化前执行`ApplicationContextAware`接口的`setApplicationAware`方法。
+
+```java
+@Override
+@Nullable
+public Object postProcessBeforeInitialization(Object bean, String beanName) throws BeansException {
+   if (!(bean instanceof EnvironmentAware || bean instanceof EmbeddedValueResolverAware ||
+         bean instanceof ResourceLoaderAware || bean instanceof ApplicationEventPublisherAware ||
+         bean instanceof MessageSourceAware || bean instanceof ApplicationContextAware ||
+         bean instanceof ApplicationStartupAware)) {
+      return bean;
+   }
+
+   AccessControlContext acc = null;
+
+   if (System.getSecurityManager() != null) {
+      acc = this.applicationContext.getBeanFactory().getAccessControlContext();
+   }
+
+   if (acc != null) {
+      AccessController.doPrivileged((PrivilegedAction<Object>) () -> {
+         invokeAwareInterfaces(bean);
+         return null;
+      }, acc);
+   }
+   else {
+      invokeAwareInterfaces(bean);
+   }
+
+   return bean;
+}
+
+private void invokeAwareInterfaces(Object bean) {
+   if (bean instanceof EnvironmentAware) {
+      ((EnvironmentAware) bean).setEnvironment(this.applicationContext.getEnvironment());
+   }
+   if (bean instanceof EmbeddedValueResolverAware) {
+      ((EmbeddedValueResolverAware) bean).setEmbeddedValueResolver(this.embeddedValueResolver);
+   }
+   if (bean instanceof ResourceLoaderAware) {
+      ((ResourceLoaderAware) bean).setResourceLoader(this.applicationContext);
+   }
+   if (bean instanceof ApplicationEventPublisherAware) {
+      ((ApplicationEventPublisherAware) bean).setApplicationEventPublisher(this.applicationContext);
+   }
+   if (bean instanceof MessageSourceAware) {
+      ((MessageSourceAware) bean).setMessageSource(this.applicationContext);
+   }
+   if (bean instanceof ApplicationStartupAware) {
+      ((ApplicationStartupAware) bean).setApplicationStartup(this.applicationContext.getApplicationStartup());
+   }
+   if (bean instanceof ApplicationContextAware) {
+       // 调用了ApplicationContextAware的方法
+      ((ApplicationContextAware) bean).setApplicationContext(this.applicationContext);
+   }
+}
+```
+
+除了`ApplicationContextAware`接口外，还调用了许多其他`Aware`接口的方法。
+
+
+
+#### BeanFactoryAware
+
+
+
+#### BeanNameAware
+
+
+
+
+
+
+
+### Spring容器刷新流程
+
+---
+
+
+
+
+
+
+
+
+
+### BeanFactory的子接口和子类
+
+---
 
 
 
