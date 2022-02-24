@@ -781,6 +781,178 @@ private void invokeAwareInterfaces(Object bean) {
 
 ---
 
+Spring容器刷新流程的代码在`AbstractApplicationContext#refresh`方法中，注释已经很完整了。
+
+```java
+synchronized (this.startupShutdownMonitor) {
+
+   // Prepare this context for refreshing.
+   prepareRefresh();
+
+   // Tell the subclass to refresh the internal bean factory.
+   ConfigurableListableBeanFactory beanFactory = obtainFreshBeanFactory();
+
+   // Prepare the bean factory for use in this context.
+   prepareBeanFactory(beanFactory);
+
+   try {
+      // Allows post-processing of the bean factory in context subclasses.
+      postProcessBeanFactory(beanFactory);
+
+      invokeBeanFactoryPostProcessors(beanFactory);
+
+      // Register bean processors that intercept bean creation.
+       // 找到所有的beanPostProcessor，排好序，放到BeanFactory的BeanPostProcessorList中。	  		//（其实就是一个CopyOnWriteArrayList）
+      registerBeanPostProcessors(beanFactory);
+      beanPostProcess.end();
+
+      // Initialize message source for this context.
+      // 国际化相关
+      initMessageSource();
+
+      // Initialize event multicaster for this context.
+       // 事件发布器
+      initApplicationEventMulticaster();
+
+      // Initialize other special beans in specific context subclasses.
+      onRefresh();
+
+      // Check for listener beans and register them.
+       // 注册事件监听器
+      registerListeners();
+
+      // Instantiate all remaining (non-lazy-init) singletons.
+       // 实例化所有的单例非懒加载的bean
+      finishBeanFactoryInitialization(beanFactory);
+
+      // Last step: publish corresponding event.
+       // 发布容器刷新事件
+      finishRefresh();
+   }
+```
+
+
+
+1. 获取BeanFactory
+2. 调用BeanFactoryPostProcessor中的方法
+3. 注册BeanPostProcessor到容器中
+4. 初始化MessageSource（国际化相关）
+5. 初始化事件多播器
+6. 注册事件监听器
+7. 完成BeanFactory初始化，并初始化单例、非懒加载的bean（在初始化前后，会调用BeanPostProcessor）
+8. 完成容器刷新，并发布容器刷新完成事件
+
+
+
+### Bean创建流程及生命周期
+
+---
+
+Bean创建是在容器刷新时。
+
+```java
+protected Object doCreateBean(String beanName, RootBeanDefinition mbd, @Nullable Object[] args)throws BeanCreationException {
+
+   // Instantiate the bean.
+   BeanWrapper instanceWrapper = null;
+   if (mbd.isSingleton()) {
+      instanceWrapper = this.factoryBeanInstanceCache.remove(beanName);
+   }
+   if (instanceWrapper == null) {
+      instanceWrapper = createBeanInstance(beanName, mbd, args);
+   }
+   Object bean = instanceWrapper.getWrappedInstance();
+   Class<?> beanType = instanceWrapper.getWrappedClass();
+   if (beanType != NullBean.class) {
+      mbd.resolvedTargetType = beanType;
+   }
+
+   // Allow post-processors to modify the merged bean definition.
+   synchronized (mbd.postProcessingLock) {
+      if (!mbd.postProcessed) {
+         try {
+            applyMergedBeanDefinitionPostProcessors(mbd, beanType, beanName);
+         }
+         catch (Throwable ex) {
+            throw new BeanCreationException(mbd.getResourceDescription(), beanName,
+                  "Post-processing of merged bean definition failed", ex);
+         }
+         mbd.postProcessed = true;
+      }
+   }
+
+   // Eagerly cache singletons to be able to resolve circular references
+   // even when triggered by lifecycle interfaces like BeanFactoryAware.
+   boolean earlySingletonExposure = (mbd.isSingleton() && this.allowCircularReferences &&
+         isSingletonCurrentlyInCreation(beanName));
+   if (earlySingletonExposure) {
+      if (logger.isTraceEnabled()) {
+         logger.trace("Eagerly caching bean '" + beanName +
+               "' to allow for resolving potential circular references");
+      }
+      addSingletonFactory(beanName, () -> getEarlyBeanReference(beanName, mbd, bean));
+   }
+
+   // Initialize the bean instance.
+   Object exposedObject = bean;
+   try {
+      populateBean(beanName, mbd, instanceWrapper);
+      exposedObject = initializeBean(beanName, exposedObject, mbd);
+   }
+   catch (Throwable ex) {
+      if (ex instanceof BeanCreationException && beanName.equals(((BeanCreationException) ex).getBeanName())) {
+         throw (BeanCreationException) ex;
+      }
+      else {
+         throw new BeanCreationException(
+               mbd.getResourceDescription(), beanName, "Initialization of bean failed", ex);
+      }
+   }
+
+   if (earlySingletonExposure) {
+      Object earlySingletonReference = getSingleton(beanName, false);
+      if (earlySingletonReference != null) {
+         if (exposedObject == bean) {
+            exposedObject = earlySingletonReference;
+         }
+         else if (!this.allowRawInjectionDespiteWrapping && hasDependentBean(beanName)) {
+            String[] dependentBeans = getDependentBeans(beanName);
+            Set<String> actualDependentBeans = new LinkedHashSet<>(dependentBeans.length);
+            for (String dependentBean : dependentBeans) {
+               if (!removeSingletonIfCreatedForTypeCheckOnly(dependentBean)) {
+                  actualDependentBeans.add(dependentBean);
+               }
+            }
+            if (!actualDependentBeans.isEmpty()) {
+               throw new BeanCurrentlyInCreationException(beanName,
+                     "Bean with name '" + beanName + "' has been injected into other beans [" +
+                     StringUtils.collectionToCommaDelimitedString(actualDependentBeans) +
+                     "] in its raw version as part of a circular reference, but has eventually been " +
+                     "wrapped. This means that said other beans do not use the final version of the " +
+                     "bean. This is often the result of over-eager type matching - consider using " +
+                     "'getBeanNamesForType' with the 'allowEagerInit' flag turned off, for example.");
+            }
+         }
+      }
+   }
+
+   // Register bean as disposable.
+   try {
+      registerDisposableBeanIfNecessary(beanName, bean, mbd);
+   }
+   catch (BeanDefinitionValidationException ex) {
+      throw new BeanCreationException(
+            mbd.getResourceDescription(), beanName, "Invalid destruction signature", ex);
+   }
+
+   return exposedObject;
+}
+```
+
+
+
+
+
 
 
 
@@ -794,6 +966,14 @@ private void invokeAwareInterfaces(Object bean) {
 
 
 ### 事件监听机制
+
+---
+
+
+
+
+
+### MyBatis的Mapper接口如何加载到Spring容器
 
 ---
 
