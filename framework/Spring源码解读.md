@@ -170,6 +170,42 @@ public void refresh() throws BeansException, IllegalStateException {
 
 
 
+**总结**：
+
+对于`AnnotatedConfigApplicationContext`，Spring容器启动流程大致可以分为三步：
+
+1. 创建BeanDefinitionReader和BeanDefinitionScaner，在初始化时会放一些后置处理器进去（ConfigurationClassPostProcessor、CommonAnnotationBeanPostProcessor、AutowiredAnnotationBeanPostProcessor等）
+
+2. 进行扫描（scan）或者注册（register），根据传参来决定。将所有要加载的Bean，扫描出来。
+
+3. 执行刷新流程，刷新流程比较复杂，设计到很多后置处理器
+
+   - 获得BeanFactory
+
+   - 调用BeanFactoryPostProcessor的方法
+
+     （Bean工厂的后置处理器和BeanDefinitionRegistyPostProcessor）
+
+   - 注册所有的BeanPostProcessor到beanFactory中（放到beanFactory的一条有序List中，执行时按顺序）
+
+   - 初始化MessageSource（国际化相关）
+
+   - 初始化事件发布器（其实就是吧ApplicationEventMuticaster放到beanFactory里）
+
+   - 注册事件监听器（事件监听机制）
+
+   - 完成bean工厂的初始化，并初始化所有单例、非懒加载的bean（初始化bean前后会执行beanPostProcessor）
+
+   - 完成刷新，发布容器刷新事件
+
+
+
+> 以上仅针对于AnnotatedConfigApplicationContext构造参数为class何basePackages 的构造器。
+>
+> 对于Spring Boot Application，则是没有调用scan。而是通过注解@ComponentScan来实现扫描，ComponentScanAnnotationParser来调用ClassPathBeanDefinitionScaner执行扫描。所以Spring Boot没有在初始化容器时执行扫描。
+
+
+
 ### AnnotationBeanDefinationReader和ClassPathBeanDefinitionScanner
 
 ---
@@ -635,9 +671,17 @@ public void refresh() throws BeansException, IllegalStateException {
 
 #### BeanFactoryPostProcessor
 
-
-
 `BeanFactoryPostProcessor`接口的方法，在容器刷新时调用。
+
+利用`BeanFactoryProcessor`接口和其子接口`BeanDefinitionRegistyPostProcessor`，我们可以实现对BeanDefinition的任意修改。虽然很少这样使用，但是Spring自己就利用了
+
+在Spring中，使用BeanFactoryPostProcessor实现了一些注解，比如 ：
+
+- ConfigurationClassPostProcessor 实现了对@Configuration注解的扫描，间接的调用`ConfigurationClassParser`完成对`@Component`、`@PropertySource`、`@ComponentScan`、`@Import`、`@ImportSource`扫描。
+
+  > Spring Boot利用`ConfigurationClassPostProcessor`对`@ComponentScan`的扫描，可以实现bean的扫描（`@SpringBootApplication`注解就标注了`@ComponentScan`），不用添加package或者class参数就可扫描。
+
+- MyBatis使用了BeanFactoryPostProcessor接口，定义了一个类`MapperScannerConfigurer`，当执行到BeanFactory后置处理器，`MapperScannerConfigurer`自定义一个`BeanDefinitionScanner`（`ClassPathMapperScanner`），重写了`processBeanDefinitions`，修改了Mapper接口的BeanDefinition属性。（比如将`BeanClass`改为了MapperFactoryBean）
 
 
 
@@ -741,11 +785,15 @@ private void invokeAwareInterfaces(Object bean) {
 
 
 
+### BeanFactory和ApplicationContext
+
+---
 
 
 
 
-### BeanFactory的子接口和子类
+
+### 事件监听机制
 
 ---
 
