@@ -850,110 +850,86 @@ synchronized (this.startupShutdownMonitor) {
 
 Bean创建是在容器刷新时。
 
+容器在创建时，会创建`BeanDefinitionScanner`和`BeanDefinitionReader`，这两个会将需要加载到容器的bean封装为BeanDefinition对象，放入一个Map中。然后在容器刷新的时候，会根据BeanDefinition来创建Bean。
+
+创建bean的流程 ：
+
+1. 第一步肯定是初始化，执行构造方法了。
+
+2. 注入属性了
+3. 执行三个Aware接口的方法（BeanNameAware、BeanFacotryAware、BeanClassLoaderAware）
+4. 执行Bean后置处理器的`postProcessBeforeInitialization`（如`ApplicationContextAwareProcessor`、`@PostConstruct`注解）
+5. Bean的InitalizingBean的afterPorpertiesSet方法
+6. 调用自定义的初始化方法（@Bean注解的init-method）
+7. BeanPostProcessor的`postProcessAfterInitialization`方法
+
 ```java
-protected Object doCreateBean(String beanName, RootBeanDefinition mbd, @Nullable Object[] args)throws BeanCreationException {
-
-   // Instantiate the bean.
-   BeanWrapper instanceWrapper = null;
-   if (mbd.isSingleton()) {
-      instanceWrapper = this.factoryBeanInstanceCache.remove(beanName);
+protected Object initializeBean(String beanName, Object bean, @Nullable RootBeanDefinition mbd) {
+   if (System.getSecurityManager() != null) {
+      AccessController.doPrivileged((PrivilegedAction<Object>) () -> {
+         invokeAwareMethods(beanName, bean);
+         return null;
+      }, getAccessControlContext());
    }
-   if (instanceWrapper == null) {
-      instanceWrapper = createBeanInstance(beanName, mbd, args);
-   }
-   Object bean = instanceWrapper.getWrappedInstance();
-   Class<?> beanType = instanceWrapper.getWrappedClass();
-   if (beanType != NullBean.class) {
-      mbd.resolvedTargetType = beanType;
+   else {
+       // invoke Aware 接口的方法(Beanname、beanFactory、BeanClassloader)
+      invokeAwareMethods(beanName, bean);
    }
 
-   // Allow post-processors to modify the merged bean definition.
-   synchronized (mbd.postProcessingLock) {
-      if (!mbd.postProcessed) {
-         try {
-            applyMergedBeanDefinitionPostProcessors(mbd, beanType, beanName);
-         }
-         catch (Throwable ex) {
-            throw new BeanCreationException(mbd.getResourceDescription(), beanName,
-                  "Post-processing of merged bean definition failed", ex);
-         }
-         mbd.postProcessed = true;
-      }
+   Object wrappedBean = bean;
+   if (mbd == null || !mbd.isSynthetic()) {
+       // 调用bean后置处理器的前置方法
+      wrappedBean = applyBeanPostProcessorsBeforeInitialization(wrappedBean, beanName);
    }
 
-   // Eagerly cache singletons to be able to resolve circular references
-   // even when triggered by lifecycle interfaces like BeanFactoryAware.
-   boolean earlySingletonExposure = (mbd.isSingleton() && this.allowCircularReferences &&
-         isSingletonCurrentlyInCreation(beanName));
-   if (earlySingletonExposure) {
-      if (logger.isTraceEnabled()) {
-         logger.trace("Eagerly caching bean '" + beanName +
-               "' to allow for resolving potential circular references");
-      }
-      addSingletonFactory(beanName, () -> getEarlyBeanReference(beanName, mbd, bean));
-   }
-
-   // Initialize the bean instance.
-   Object exposedObject = bean;
    try {
-      populateBean(beanName, mbd, instanceWrapper);
-      exposedObject = initializeBean(beanName, exposedObject, mbd);
+       // 调用init方法
+       // 1.InitialingBean#afterPropertiesSet
+       // 2.Bean注解的init-method
+      invokeInitMethods(beanName, wrappedBean, mbd);
    }
    catch (Throwable ex) {
-      if (ex instanceof BeanCreationException && beanName.equals(((BeanCreationException) ex).getBeanName())) {
-         throw (BeanCreationException) ex;
-      }
-      else {
-         throw new BeanCreationException(
-               mbd.getResourceDescription(), beanName, "Initialization of bean failed", ex);
-      }
-   }
-
-   if (earlySingletonExposure) {
-      Object earlySingletonReference = getSingleton(beanName, false);
-      if (earlySingletonReference != null) {
-         if (exposedObject == bean) {
-            exposedObject = earlySingletonReference;
-         }
-         else if (!this.allowRawInjectionDespiteWrapping && hasDependentBean(beanName)) {
-            String[] dependentBeans = getDependentBeans(beanName);
-            Set<String> actualDependentBeans = new LinkedHashSet<>(dependentBeans.length);
-            for (String dependentBean : dependentBeans) {
-               if (!removeSingletonIfCreatedForTypeCheckOnly(dependentBean)) {
-                  actualDependentBeans.add(dependentBean);
-               }
-            }
-            if (!actualDependentBeans.isEmpty()) {
-               throw new BeanCurrentlyInCreationException(beanName,
-                     "Bean with name '" + beanName + "' has been injected into other beans [" +
-                     StringUtils.collectionToCommaDelimitedString(actualDependentBeans) +
-                     "] in its raw version as part of a circular reference, but has eventually been " +
-                     "wrapped. This means that said other beans do not use the final version of the " +
-                     "bean. This is often the result of over-eager type matching - consider using " +
-                     "'getBeanNamesForType' with the 'allowEagerInit' flag turned off, for example.");
-            }
-         }
-      }
-   }
-
-   // Register bean as disposable.
-   try {
-      registerDisposableBeanIfNecessary(beanName, bean, mbd);
-   }
-   catch (BeanDefinitionValidationException ex) {
       throw new BeanCreationException(
-            mbd.getResourceDescription(), beanName, "Invalid destruction signature", ex);
+            (mbd != null ? mbd.getResourceDescription() : null),
+            beanName, "Invocation of init method failed", ex);
+   }
+   if (mbd == null || !mbd.isSynthetic()) {
+       // 调用Bean后置处理器的后置方法
+      wrappedBean = applyBeanPostProcessorsAfterInitialization(wrappedBean, beanName);
    }
 
-   return exposedObject;
+   return wrappedBean;
+}
+```
+
+```java
+private void invokeAwareMethods(String beanName, Object bean) {
+   if (bean instanceof Aware) {
+      if (bean instanceof BeanNameAware) {
+         ((BeanNameAware) bean).setBeanName(beanName);
+      }
+      if (bean instanceof BeanClassLoaderAware) {
+         ClassLoader bcl = getBeanClassLoader();
+         if (bcl != null) {
+            ((BeanClassLoaderAware) bean).setBeanClassLoader(bcl);
+         }
+      }
+      if (bean instanceof BeanFactoryAware) {
+         ((BeanFactoryAware) bean).setBeanFactory(AbstractAutowireCapableBeanFactory.this);
+      }
+   }
 }
 ```
 
 
 
+执行销毁步骤的前提是，调用了`context.registerShutdownHook()`注册了关闭钩子。
 
+销毁的步骤就很简单了 ：
 
-
+1. 执行`@PreDestory`方法
+2. 执行DisposableBean接口
+3. 配置的destory-method方法
 
 
 
