@@ -931,9 +931,318 @@ private void invokeAwareMethods(String beanName, Object bean) {
 2. 执行DisposableBean接口
 3. 配置的destory-method方法
 
+```java
+//Spring容器添加ShutdownHook
+@Override
+public void registerShutdownHook() {
+   if (this.shutdownHook == null) {
+      // No shutdown hook registered yet.
+      this.shutdownHook = new Thread(SHUTDOWN_HOOK_THREAD_NAME) {
+         @Override
+         public void run() {
+            synchronized (startupShutdownMonitor) {
+               doClose();
+            }
+         }
+      };
+      Runtime.getRuntime().addShutdownHook(this.shutdownHook);
+   }
+}
+```
 
+
+
+```java
+protected void doClose() {
+   // Check whether an actual close attempt is necessary...
+   if (this.active.get() && this.closed.compareAndSet(false, true)) {
+
+      if (!NativeDetector.inNativeImage()) {
+         LiveBeansView.unregisterApplicationContext(this);
+      }
+
+      // Publish shutdown event.发布关闭容器事件
+      publishEvent(new ContextClosedEvent(this)); 
+
+      // Stop all Lifecycle beans, to avoid delays during individual destruction.
+      if (this.lifecycleProcessor != null) {
+          // 调用lifecycleProcessor的onclose方法
+            this.lifecycleProcessor.onClose();
+      }
+
+      // Destroy all cached singletons in the context's BeanFactory.
+       // 销毁bean
+      destroyBeans();
+
+      // Close the state of this context itself.
+      // 关闭beanFactory，其实就是把beanFactory的Id设置为null
+      closeBeanFactory();
+
+      // Let subclasses do some final clean-up if they wish...
+       // 调用子类的onClose方法（留给子类扩展）
+      onClose();
+
+      // Reset local application listeners to pre-refresh state.
+      if (this.earlyApplicationListeners != null) {
+         this.applicationListeners.clear();
+         this.applicationListeners.addAll(this.earlyApplicationListeners);
+      }
+
+      // Switch to inactive.
+       // 设置标记位
+      this.active.set(false);
+   }
+}
+```
+
+最重要的是`destroyBean`方法。这个方法中，ApplicationContext会调用beanFactory的`destroySingletons`方法。
+
+```java
+// AbstractApplicationContext#destroyBeans
+protected void destroyBeans() {
+   // 拿到BeanFactory，getBeanFactory由子类实现
+   getBeanFactory().destroySingletons();
+}
+```
+
+而`BeanFactory.destroySingletons`最终会层层调用到 ：
+
+```java
+private final Map<String, Object> disposableBeans = new LinkedHashMap<>();
+
+public void destroySingletons() {
+
+   synchronized (this.singletonObjects) {
+      this.singletonsCurrentlyInDestruction = true;
+   }
+
+   String[] disposableBeanNames;
+   synchronized (this.disposableBeans) {
+      // 拿到所有要销毁的bean（其实不是Bean，而是DisposableBeanAdapter，         DisposableBeanAdapter用来包装DisposableBean）
+      disposableBeanNames = StringUtils.toStringArray(this.disposableBeans.keySet());
+   }
+   for (int i = disposableBeanNames.length - 1; i >= 0; i--) {
+      // destorySingleton最终会根据DisposableBeanAdapter的destroy方法，然后再调用Bean的destroy方法
+      destroySingleton(disposableBeanNames[i]);
+   }
+
+   this.containedBeanMap.clear();
+   this.dependentBeanMap.clear();
+   this.dependenciesForBeanMap.clear();
+
+   clearSingletonCache();
+}
+```
+
+
+
+这里有一个重要的一点：`disposableBean`这个Map中，保存的**并不是（实现DisposableBean接口的）Bean**实例，而是`DiposableBeanAdapter`适配器（适配器模式），`DisposableBeanAdapter`会包装`Bean`，然后会间接调用`Bean#destroy`方法，在调用bean的destroy前后，会做一些处理。
+
+`DisposableBeanAdapter#destroy`
+
+```java
+public void destroy() {
+   if (!CollectionUtils.isEmpty(this.beanPostProcessors)) {
+      // 会调用到CommonAnnotationBeanPostProcessor（@PreDestroy）
+      // 
+      for (DestructionAwareBeanPostProcessor processor : this.beanPostProcessors) {
+         processor.postProcessBeforeDestruction(this.bean, this.beanName);
+      }
+   }
+
+   if (this.invokeDisposableBean) {
+       // 调用Bean的destroy方法
+       ((DisposableBean) this.bean).destroy();
+   }
+
+   if (this.invokeAutoCloseable) {
+       // 调用Bean的close方法（AutoCloseable接口）
+       ((AutoCloseable) this.bean).close();
+   }
+   else if (this.destroyMethod != null) {
+      // 自定义的销毁方法（destory-method）
+      invokeCustomDestroyMethod(this.destroyMethod);
+   }
+   else if (this.destroyMethodName != null) {
+      Method methodToInvoke = determineDestroyMethod(this.destroyMethodName);
+      if (methodToInvoke != null) {
+         invokeCustomDestroyMethod(ClassUtils.getInterfaceMethodIfPossible(methodToInvoke));
+      }
+   }
+}
+```
+
+从源码上看，销毁方法的执行顺序是 ：
+
+1. `@PreDestroy`方法
+2. `Disposablebean#destroy`方法
+3. `AutoCloseable#close`方法
+4. 注解或配置文件指定的`destroy-method`方法
+
+
+
+还有一个疑问，`DisposableBeanAdapter`是何时放在`Map`容器的呢？
+
+经过Debug，发现是 ：在创建Bean后，返回bean之前，会注册`DisposableBeanAdapter`。
+
+`AbstractAutowireCapableBeanFactory#doCreateBean`
+
+```java
+try {
+   registerDisposableBeanIfNecessary(beanName, bean, mbd);
+}
+catch (BeanDefinitionValidationException ex) {
+   throw new BeanCreationException(
+         mbd.getResourceDescription(), beanName, "Invalid destruction signature", ex);
+}
+
+return exposedObject;
+```
+
+
+
+然后 ：
+
+```java
+protected void registerDisposableBeanIfNecessary(String beanName, Object bean, RootBeanDefinition mbd) {
+   AccessControlContext acc = (System.getSecurityManager() != null ? getAccessControlContext() : null);
+   if (!mbd.isPrototype() && requiresDestruction(bean, mbd)) {
+      if (mbd.isSingleton()) {
+         // Register a DisposableBean implementation that performs all destruction
+         // work for the given bean: DestructionAwareBeanPostProcessors,
+         // DisposableBean interface, custom destroy method.
+         registerDisposableBean(beanName, new DisposableBeanAdapter(
+               bean, beanName, mbd, getBeanPostProcessorCache().destructionAware, acc));
+      }
+      else {
+         // A bean with a custom scope...
+         Scope scope = this.scopes.get(mbd.getScope());
+         if (scope == null) {
+            throw new IllegalStateException("No Scope registered for scope name '" + mbd.getScope() + "'");
+         }
+         scope.registerDestructionCallback(beanName, new DisposableBeanAdapter(
+               bean, beanName, mbd, getBeanPostProcessorCache().destructionAware, acc));
+      }
+   }
+}
+```
+
+如果是 单例，并且需要在关闭的时候调用方法（实现了`DisposableBean`接口、或者使用了`@PreDestory`，或者指定了`destory-method`，或者实现了`AutoCloseable`接口），都会封装为`DisposableBeanAdapter`对象，在容器关闭时，触发关闭钩子，调用关闭方法。
+
+
+
+再谈`CommonAnnotationBeanPostProcessor`：
+
+`CommonAnnotationBeanPostProcessor`实现了JSR-250，即`@PostConstract`和`@PreDestroy`两个注解。
+
+`CommonAnnotationBeanPostPrcessor`继承了`InitDestroyAnnotationBeanPostProcessor`。
+
+`InitDestoryAnnotationBeanPostProcessor`的父接口是`DestructionAwareBeanPostPrcessor`接口，
+
+`DestructionAwareBeanPostProcessor`父接口是`BeanPostProcessor`。
+
+`BeanPostProcessor`中的两个方法会在实例化后调用（`@PostConstruct`的原理）。
+
+而`DestuctionAwareBeanPostProcessor`则是在容器销毁前会调用其方法`postProcessBeforeDestruction`。（`@PreDestory`原理）
 
 ### BeanFactory和ApplicationContext
+
+---
+
+`BeanFactory`和`ApplicationContext`分别是两个接口，`ApplicationContext`是`BeanFactory`的子接口的子接口。
+
+`BeanFactory`接口非常简单，只有几个方法，就是一个容器。
+
+```
+public interface BeanFactory {
+
+   String FACTORY_BEAN_PREFIX = "&";
+	
+   Object getBean(String name) throws BeansException;
+
+   <T> T getBean(String name, Class<T> requiredType) throws BeansException;
+
+   Object getBean(String name, Object... args) throws BeansException;
+
+   <T> T getBean(Class<T> requiredType) throws BeansException;
+
+   <T> T getBean(Class<T> requiredType, Object... args) throws BeansException;
+
+   <T> ObjectProvider<T> getBeanProvider(Class<T> requiredType);
+
+   <T> ObjectProvider<T> getBeanProvider(ResolvableType requiredType);
+
+   boolean containsBean(String name);
+
+   boolean isSingleton(String name) throws NoSuchBeanDefinitionException;
+
+   boolean isPrototype(String name) throws NoSuchBeanDefinitionException;
+
+   boolean isTypeMatch(String name, ResolvableType typeToMatch) throws NoSuchBeanDefinitionException;
+
+   boolean isTypeMatch(String name, Class<?> typeToMatch) throws NoSuchBeanDefinitionException;
+
+   Class<?> getType(String name) throws NoSuchBeanDefinitionException;
+
+   Class<?> getType(String name, boolean allowFactoryBeanInit) throws NoSuchBeanDefinitionException;
+
+   String[] getAliases(String name);
+
+}
+```
+
+通过`BeanFactory`，我们可以根据类型、名称，获得bean；判断bean是单例还是多例；获取Bean的别名等等操作。
+
+
+
+而ApplicationContext不仅实现了BeanFactory接口，还提供了一些高级功能 ：
+
+- 事件监听机制
+- 国际化
+- 支持`@PostConstract`和`@PreDestroy`注解
+
+
+
+最主要的区别是 ：beanFactory是**懒加载**的，而ApplicationContext默认情况下是**容器刷新**时就创建实例。这个是因为早期的电脑内存小性能差，懒加载能避免创建没有使用的类。
+
+BeanFactory使用 ：
+
+```java
+public static void main(String[] args) throws Exception {
+    DefaultListableBeanFactory beanFactory = new DefaultListableBeanFactory();
+    ClassPathResource resource = new ClassPathResource("bean.xml");
+    XmlBeanDefinitionReader reader = new XmlBeanDefinitionReader(beanFactory);
+    reader.loadBeanDefinitions(resource);
+    UserComponent component = beanFactory.getBean(UserComponent.class);
+    component.destroy();
+}
+```
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xsi:schemaLocation="http://www.springframework.org/schema/beans
+       http://www.springframework.org/schema/beans/spring-beans.xsd">
+    <bean id="userComponent" class="com.example.spring.inject.demo.component.UserComponent"/>
+</beans>
+```
+
+
+
+我们常用的ApplicationContext有：
+
+- `GenericApplicationContext`及其子类`AnnotationConfigApplicationContext`
+
+常用的`BeanFactory`有：
+
+- `DefaultListableBeanFactory`
+
+
+
+
+
+### Factorybean的实现原理
 
 ---
 
@@ -945,7 +1254,7 @@ private void invokeAwareMethods(String beanName, Object bean) {
 
 ---
 
-
+容器刷新时，会初始化事件发布器和事件监听器。
 
 
 
