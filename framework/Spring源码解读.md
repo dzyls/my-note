@@ -1293,11 +1293,15 @@ public static void main(String[] args) throws Exception {
 
 
 
-### Factorybean的实现原理
+### FactoryBean的实现原理
 
 ---
 
+使用FactoryBean可以让我们
 
+
+
+### BeanNameGene
 
 
 
