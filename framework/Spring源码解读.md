@@ -1240,6 +1240,57 @@ public static void main(String[] args) throws Exception {
 
 
 
+### 向容器中添加bean的方式
+
+---
+
+添加Bean到容器中的方式常见的有 ：
+
+- xml配置【老项目才用到】
+- @Component注解及其衍生注解（@Service等）
+- @Configuration和@Bean
+
+这是常用的，那不常用的呢？
+
+- `@Import(XXX.class)` 这个注解也能加载Bean
+
+- 实现`ImportSelector`接口，搭配`@Import`注解（Spring Boot的原理，后续会介绍）
+
+- 代码手动向容器中注入（BeanFactory的后置处理器）
+
+  ```java
+  @Override
+  public void postProcessBeanFactory(ConfigurableListableBeanFactory beanFactory) throws BeansException {
+      DefaultListableBeanFactory factory = (DefaultListableBeanFactory) beanFactory;
+      RootBeanDefinition definition = new RootBeanDefinition(PicComponent.class);
+      factory.registerBeanDefinition("picComponent", definition);
+  }
+  ```
+
+> 网上有些资料，说使用BeanFactoryAware也可以，本地实测在普通的Bean不行（Spring Boot 2.5.9）。
+>
+> 此处应与容器刷新流程相关。
+>
+> 1. 拿到BeanFactory
+> 2. BeanFactoryPostProcessor接口
+> 3. 注册BeanPostProcessor到容器中
+> 4. 初始化国际化
+> 5. 初始化事件发布器
+> 6. 初始化事件监听器
+> 7. 初始化所有的单例非懒加载Bean
+> 8. 发布容器刷新事件
+>
+> Bean创建的流程有：
+>
+> 1. 初始化bean
+> 2. 填充属性
+> 3. 执行三个Aware接口
+> 4. 执行Bean的后置处理器（@PostConstruct、ApplicationContextAware接口）
+> 5. 执行InitilzingBean接口的afterPropertiesSet
+> 6. 执行init-method
+
+在普通的bean是不可以的，常用的方法是使用BeanFactoryPostProcessor的后置处理方法来手动加载Bean，比如MyBatis就是使用这个接口，将Mapper接口放入了容器，然后我们就能像普通的Bean一样注入，并调用SQL语句。
+
 
 
 ### Factorybean的实现原理
@@ -1254,7 +1305,47 @@ public static void main(String[] args) throws Exception {
 
 ---
 
+Spring容器发布事件和接收事件很简单：
+
+```java
+@Autowired
+private ApplicationContext applicationContext;
+
+public void event(){
+    applicationContext.pubilshEvent(new CustomEvent(this));
+}
+```
+
+```java
+@Component
+public class CustomEventListener implements ApplicationListener<CustomEvent> {
+    @Override
+    public void onApplicationEvent(CustomEvent event) {
+        System.out.println("receiver custom event...");
+    }
+}
+```
+
+
+
 容器刷新时，会初始化事件发布器和事件监听器。
+
+`AbstractApplicationContext#refresh`
+
+```java
+// Initialize event multicaster for this context.
+initApplicationEventMulticaster();
+
+// Initialize other special beans in specific context subclasses.
+onRefresh();
+
+// Check for listener beans and register them.
+registerListeners();
+```
+
+
+
+
 
 
 
@@ -1311,3 +1402,12 @@ public ConfigurableApplicationContext run(String... args) {
    return context;
 }
 ```
+
+
+
+
+
+### Spring使用的设计模式
+
+---
+
