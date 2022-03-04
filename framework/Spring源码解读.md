@@ -1297,11 +1297,35 @@ public static void main(String[] args) throws Exception {
 
 ---
 
-使用FactoryBean可以让我们
+使用FactoryBean可以让程序员去定制实例化Bean的逻辑，甚至可以用来生成代理对象返回给容器进行加载，由此可以做一些事情，比如，Bean初始化的逻辑的修改。
+
+MyBatis是就是利用FactoryBean接口，将Mapper接口的JDK代理对象注入到Spring容器的。
+
+在创建Bean时，会调用`FactoryBean`的`getObject`方法。
+
+```java
+// Create bean instance.
+if (mbd.isSingleton()) {
+   // 会创建FactoryBean放入到容器
+   sharedInstance = getSingleton(beanName, () -> {
+      try {
+         return createBean(beanName, mbd, args);
+      }
+      catch (BeansException ex) {
+         destroySingleton(beanName);
+         throw ex;
+      }
+   });
+   // 调用FactoryBean的getObject方法，如果不是FactoryBean就会跳过
+   beanInstance = getObjectForBeanInstance(sharedInstance, name, beanName, mbd);
+}
+```
 
 
 
-### BeanNameGene
+### BeanName
+
+---
 
 
 
@@ -1349,13 +1373,60 @@ registerListeners();
 
 
 
-
-
-
-
 ### MyBatis的Mapper接口如何加载到Spring容器
 
 ---
+
+在上面的内容记录了 ：
+
+- 代码加载Bean的的实践方式有 ：使用BeanFactoryPostProcessor后置处理器去手动加载
+- FactoryBean可以定制Bean的实例化过程，甚至可以手动生成代理对象放进去，这一点想象空间就非常大，以做很多的事情。
+
+MyBatis搭配Spring的自动加载Mapper接口就是基于这两点原理。
+
+回忆一下，不使用Spring的MyBatis的使用流程 ：
+
+1. SqlSessionFactoryBuilder根据配置文件生成SqlSessionFactory
+2. SqlSessionFactory可以创建SqlSession
+3. SqlSession使用`getMapper(Class)`获取Mapper对象然后调用方法或者`sqlSession.selectList`直接拿到结果。如果是增删改，会根据结果还是异常去决定是否回滚。
+
+从源码可得知`sqlSession#getMapper（）`其实是通过MapperRegistry拿到`MapperProxyFactory`，然后`MapperProxyFactory`可以创造`MapperProxy`，这就是一个JDK代理对象。调用`Mapper`接口的各种方法，最终会调用到`MapperProxy#invoke`方法，`invoke`方法最终还是根据增删改查来调用`sqlSession`去执行增删改查。
+
+
+
+MyBatis的原理就是以上了，但MyBatis和Spring搭配就有以下疑问了 ：
+
+- Mapper接口没有@Component注解，怎么会被扫描到的？
+- Mapper接口没有实现，怎么加载到容器中的？（接口不能实现就不能加载到容器咯）
+
+
+
+原理之前已经介绍过了，下面开始源码分析 ：
+
+MyBatis有个配置类`MapperScannerConfigurer`实现了`BeanDefinitionRegistryPostProcessor`接口 ：
+
+```java
+public class MapperScannerConfigurer
+    implements BeanDefinitionRegistryPostProcessor, InitializingBean, ApplicationContextAware, BeanNameAware {
+```
+
+它实现了`postProcessBeanDefinitionRegistry`方法，并在这个方法中创建了一个`ClassPathMapperScanner`（ClassPathBeanDefinitionScanner的子类），并调用了这个`ClassPathMapperScanner`去配置的`basePackages`扫描。
+
+```java
+public void postProcessBeanDefinitionRegistry(BeanDefinitionRegistry registry) {
+  if (this.processPropertyPlaceHolders) {
+    processPropertyPlaceHolders();
+  }
+
+  ClassPathMapperScanner scanner = new ClassPathMapperScanner(registry);
+  // 省略配置scanner的代码
+  scanner.registerFilters();
+  scanner.scan(
+      StringUtils.tokenizeToStringArray(this.basePackage, ConfigurableApplicationContext.CONFIG_LOCATION_DELIMITERS));
+}
+```
+
+`ClassPathMapperScanner#doScan`会首先调用父类的`ClassPathBeanDefinitionScanner#scan`方法。
 
 
 
