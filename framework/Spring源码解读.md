@@ -1327,6 +1327,20 @@ if (mbd.isSingleton()) {
 
 ---
 
+在扫描Bean时，Bean的名称默认是使用驼峰命名法。我们也可以使用注解或者配置文件的方式，来指定beanName。
+
+默认情况下，BeanName的生成，是基于BeanNameGenerator这个接口。我们可以重写这个接口的子类来实现自定义BeanNameGenerator。这里的场景是，微内核架构的插件，Spring在加载所需的插件时，每个插件可能会有同名的Bean，这样就会造成覆盖。因此可以自定义BeanNameGenerator，来给BeanName拼接后缀来区别。
+
+
+
+如果想统一对某个包下的Bean进行特殊命名，那么要使用`@ComponentScan`指定`BeanNameGenerator`。
+
+如果不想使用注解的方式，也可以手动调用applicationContext来注册beanDefinition。
+
+```java
+applicationContext.registBeanDefinition(beanName,beanDefinition);
+```
+
 
 
 ### 事件监听机制
@@ -1370,6 +1384,43 @@ onRefresh();
 // Check for listener beans and register them.
 registerListeners();
 ```
+
+registerListener，会将监听器注册到事件发布器中的一个`LinkedHashSet`。
+
+```java
+public void addApplicationListener(ApplicationListener<?> listener) {
+   synchronized (this.defaultRetriever) {
+      Object singletonTarget = AopProxyUtils.getSingletonTarget(listener);
+      if (singletonTarget instanceof ApplicationListener) {
+         this.defaultRetriever.applicationListeners.remove(singletonTarget);
+      }
+      this.defaultRetriever.applicationListeners.add(listener);
+      this.retrieverCache.clear();
+   }
+}
+```
+
+事件发布器发布事件时，就是根据事件类型将事件监听器找出来，然后调用即可。
+
+```java
+@Override
+public void multicastEvent(final ApplicationEvent event, @Nullable ResolvableType eventType) {
+   ResolvableType type = (eventType != null ? eventType : resolveDefaultEventType(event));
+   Executor executor = getTaskExecutor();
+   for (ApplicationListener<?> listener : getApplicationListeners(event, type)) {
+      if (executor != null) {
+         executor.execute(() -> invokeListener(listener, event));
+      }
+      else {
+         invokeListener(listener, event);
+      }
+   }
+}
+```
+
+默认是同步执行的（executor默认情况下是为空的）。
+
+如果要设置为异步，可以对这个executor进行赋值。
 
 
 
@@ -1478,6 +1529,16 @@ public ConfigurableApplicationContext run(String... args) {
 }
 ```
 
+SpringBoot其实是对Spring的简化，在没有SpringBoot时，启动一个Spring程序要写配置文件，要手动`new ConfigurableApplicationContext`，然后还要手动注册销毁钩子`context.registShutdownHook`。写代码倒是其次，主要是写配置文件太麻烦了。并且还要自己一个一个往`pom.xml`写依赖。这也是一种麻烦，是可避免的。
+
+
+
+针对以上痛点，Spring Boot做了以下的优化 ：
+
+1. 减少了xml配置文件
+2. SpringBoot启动及其简单，使用注解+main方法就可以启动（底层还是调用了ConfigurableApplocationContext）。
+3. 更方便的依赖管理（虽然有时候会引入不需要的jar包）
+
 
 
 
@@ -1486,3 +1547,11 @@ public ConfigurableApplicationContext run(String... args) {
 
 ---
 
+- 单例
+- 工厂
+- 模板
+- 适配器
+- 代理模式
+- 观察者模式
+- 策略模式
+- 装饰器
