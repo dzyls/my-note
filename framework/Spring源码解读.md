@@ -650,6 +650,14 @@ public void refresh() throws BeansException, IllegalStateException {
 
 
 
+### Spring注入流程
+
+---
+
+
+
+
+
 ### 后置处理器
 
 ---
@@ -1540,6 +1548,138 @@ SpringBoot其实是对Spring的简化，在没有SpringBoot时，启动一个Spr
 3. 更方便的依赖管理（虽然有时候会引入不需要的jar包）
 
 
+
+### Spring Boot自动装配原理
+
+---
+
+假设你要实现插件式、可插拔的功能需求，要怎么来实现？
+
+Java中有一个特性，可以满足这个 ：SPI。Dubbo就是使用改良版的SPI来做插件式开发。
+
+Spring则是提供了一种类SPI机制，更为的灵活。
+
+
+
+在SpringBoot程序中，我们要标注`@SpringBootApplication`注解，否则Spring Boot就不会去扫描包。
+
+理所当然，这个`@SpringBootApplication`注解被`@ComponentScan`注解标注。
+
+```java
+@SpringBootConfiguration
+@EnableAutoConfiguration
+@ComponentScan(excludeFilters = { @Filter(type = FilterType.CUSTOM, classes = TypeExcludeFilter.class),
+      @Filter(type = FilterType.CUSTOM, classes = AutoConfigurationExcludeFilter.class) })
+public @interface SpringBootApplication {//省略}
+```
+
+`@ComponentScan`我们认识，但是`@EnableAutoConfiguration`是什么情况？
+
+```java
+@AutoConfigurationPackage
+@Import(AutoConfigurationImportSelector.class)
+public @interface EnableAutoConfiguration {}
+```
+
+可以看到这个`@EnableAutoConfiguration`使用了`@Import`注解标注了，之前有说过，`@Import`注解可以手动向容器添加bean。
+
+说到`@Import`注解，之前提过，处理`@Import`注解的步骤在`ConfigurationClassParser#processImports`方法中。
+
+```java
+for (SourceClass candidate : importCandidates) {
+	if (candidate.isAssignable(ImportSelector.class)) {
+	// Candidate class is an ImportSelector -> delegate to it to determine imports
+	Class<?> candidateClass = candidate.loadClass();
+	ImportSelector selector = ParserStrategyUtils.instantiateClass(candidateClass, ImportSelector.class,
+	this.environment, this.resourceLoader, this.registry);
+	Predicate<String> selectorFilter = selector.getExclusionFilter();
+	if (selectorFilter != null) {
+		exclusionFilter = exclusionFilter.or(selectorFilter);
+	}
+	if (selector instanceof DeferredImportSelector) {
+        // 如果selector是DeferredImportSelector子类，则通过handle，
+        // handle方法不会调用ImportSelector#selectImport
+		this.deferredImportSelectorHandler.handle(configClass, (DeferredImportSelector) selector);
+	}else {
+        // 如果不是DeferredImportSelector子类，则调用selectImport方法
+		String[] importClassNames = selector.selectImports(currentSourceClass.getMetadata());
+		Collection<SourceClass> importSourceClasses = asSourceClasses(importClassNames, exclusionFilter);
+		processImports(configClass, currentSourceClass, importSourceClasses, exclusionFilter, false);
+			}
+	}else if(candidate.isAssignable(ImportBeanDefinitionRegistrar.class)) {
+		// Candidate class is an ImportBeanDefinitionRegistrar ->
+		// delegate to it to register additional bean definitions
+		Class<?> candidateClass = candidate.loadClass();
+		ImportBeanDefinitionRegistrar registrar =
+								ParserStrategyUtils.instantiateClass(candidateClass, ImportBeanDefinitionRegistrar.class,
+		this.environment, this.resourceLoader, this.registry);
+	configClass.addImportBeanDefinitionRegistrar(registrar,currentSourceClass.getMetadata());
+	}else {
+		// Candidate class not an ImportSelector or ImportBeanDefinitionRegistrar ->
+		// process it as an @Configuration class
+        // 处理Configuration注解
+		this.importStack.registerImport(currentSourceClass.getMetadata(), candidate.getMetadata().getClassName());
+		processConfigurationClass(candidate.asConfigClass(configClass), exclusionFilter);
+			}
+	}
+```
+
+在`processImports`方法中，会处理`ImportSelector`、`ImportBeanDefinitionRegistrar`、`@Configuration`注解的类。
+
+而`AutoConfigurationImportSelector`类是`DeferredImportSelector`的子类，因此不会调用`selectImports`方法（在老版本的Spring Boot是会调用这个方法的），而是会调用`getAutoConfigurationEntry`这个方法。
+
+```java
+protected AutoConfigurationEntry getAutoConfigurationEntry(AnnotationMetadata annotationMetadata) {
+   if (!isEnabled(annotationMetadata)) {
+      return EMPTY_ENTRY;
+   }
+   AnnotationAttributes attributes = getAttributes(annotationMetadata);
+   // 调用SpringFactoryLoader拿到spring.factories中的配置类
+   List<String> configurations = getCandidateConfigurations(annotationMetadata, attributes);
+   // 去重
+   configurations = removeDuplicates(configurations);
+   // 去除注解中配置要清除的
+   Set<String> exclusions = getExclusions(annotationMetadata, attributes);
+   checkExcludedClasses(configurations, exclusions);
+   configurations.removeAll(exclusions);
+   configurations = getConfigurationClassFilter().filter(configurations);
+   // 发布事件
+   fireAutoConfigurationImportEvents(configurations, exclusions);
+   return new AutoConfigurationEntry(configurations, exclusions);
+}
+```
+
+```java
+protected List<String> getCandidateConfigurations(AnnotationMetadata metadata, AnnotationAttributes attributes) {
+   // 调用springFactoriesLoader拿到所有的配置类
+   List<String> configurations = 		SpringFactoriesLoader.loadFactoryNames(getSpringFactoriesLoaderFactoryClass(),
+         getBeanClassLoader());
+   return configurations;
+}
+```
+
+
+
+如果需要spring boot加载自定义的starter，只需要在`spring.factories`文件中添加自定义的`ImportSelector`实现类或`@Configuration`标注的类即可。如 ：
+
+```properties
+org.springframework.boot.autoconfigure.EnableAutoConfiguration=com.exmple.component.importer.CustomizeImportSelector
+```
+
+```java
+public class CustomizeImportSelector implements ImportSelector {
+    @Override
+    public String[] selectImports(AnnotationMetadata importingClassMetadata) {
+        return new String[]{"com.exmple.component.configuration.AutoImportConfiguration"};
+    }
+}
+```
+
+这样就可以使用到Spring Boot的SPI机制。
+
+
+
+**总结 ：**Spring Boot是对Spring的简化，使用了`@ComponentScan`注解扫描Main类的包，因此不需要我们手动写`@ComponentScan`或者配置；使用了`@EnableAutoConfiguration`注解，这个注解使用了`@Import`注解标注，并导入了`AutoConfigurationImportSelector`类，这个类会调用SpringFactoriesLoader从spring.factories拿到所有所需要的加载配置类。
 
 
 
