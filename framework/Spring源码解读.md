@@ -1262,7 +1262,7 @@ public static void main(String[] args) throws Exception {
 
 - `@Import(XXX.class)` 这个注解也能加载Bean
 
-- 实现`ImportSelector`接口，搭配`@Import`注解（Spring Boot的原理，后续会介绍）
+- 实现`ImportSelector`接口，搭配`@Import`注解和spring.factories文件（Spring Boot的SPI原理，后续会介绍）
 
 - 代码手动向容器中注入（BeanFactory的后置处理器）
 
@@ -1486,6 +1486,160 @@ public void postProcessBeanDefinitionRegistry(BeanDefinitionRegistry registry) {
 ```
 
 `ClassPathMapperScanner#doScan`会首先调用父类的`ClassPathBeanDefinitionScanner#scan`方法。
+
+
+
+**MapperScan注解实现原理**
+
+MapperScan是MyBatis自定义的注解，用于指定Mapper接口的类或包的位置，然后Spring就会将指定的类或包加载到容器中。
+
+首先看MapperScan注解 ：
+
+```java
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.TYPE)
+@Documented
+@Import(MapperScannerRegistrar.class)
+@Repeatable(MapperScans.class)
+public @interface MapperScan {
+ 	// 省略属性值   
+}
+```
+
+重点中`@Import`导入的这个类。
+
+
+
+`MapperScannerRegistrar`是`ImportBeanDefinitionRegitrar`的子类 :
+
+```java
+public class MapperScannerRegistrar implements ImportBeanDefinitionRegistrar{
+  // 读取MapperScan注解中的值，并放入BeanDefinitionMap中
+  @Override
+  public void registerBeanDefinitions(AnnotationMetadata importingClassMetadata, BeanDefinitionRegistry registry) {
+    AnnotationAttributes mapperScanAttrs = AnnotationAttributes
+        .fromMap(importingClassMetadata.getAnnotationAttributes(MapperScan.class.getName()));
+    if (mapperScanAttrs != null) {
+      registerBeanDefinitions(importingClassMetadata, mapperScanAttrs, registry,
+          generateBaseBeanName(importingClassMetadata, 0));
+    }
+  }
+  
+  // 解析MapperScan注解的值，并放入property中。后续会在MapperScanConfigurer中取出并去扫描指定的Package
+  void registerBeanDefinitions(AnnotationMetadata annoMeta, AnnotationAttributes annoAttrs,
+      BeanDefinitionRegistry registry, String beanName) {
+
+    BeanDefinitionBuilder builder = BeanDefinitionBuilder.genericBeanDefinition(MapperScannerConfigurer.class);
+    builder.addPropertyValue("processPropertyPlaceHolders", true);
+
+    Class<? extends Annotation> annotationClass = annoAttrs.getClass("annotationClass");
+    if (!Annotation.class.equals(annotationClass)) {
+      builder.addPropertyValue("annotationClass", annotationClass);
+    }
+
+    Class<?> markerInterface = annoAttrs.getClass("markerInterface");
+    if (!Class.class.equals(markerInterface)) {
+      builder.addPropertyValue("markerInterface", markerInterface);
+    }
+
+    Class<? extends BeanNameGenerator> generatorClass = annoAttrs.getClass("nameGenerator");
+    if (!BeanNameGenerator.class.equals(generatorClass)) {
+      builder.addPropertyValue("nameGenerator", BeanUtils.instantiateClass(generatorClass));
+    }
+
+    Class<? extends MapperFactoryBean> mapperFactoryBeanClass = annoAttrs.getClass("factoryBean");
+    if (!MapperFactoryBean.class.equals(mapperFactoryBeanClass)) {
+      builder.addPropertyValue("mapperFactoryBeanClass", mapperFactoryBeanClass);
+    }
+
+    String sqlSessionTemplateRef = annoAttrs.getString("sqlSessionTemplateRef");
+    if (StringUtils.hasText(sqlSessionTemplateRef)) {
+      builder.addPropertyValue("sqlSessionTemplateBeanName", annoAttrs.getString("sqlSessionTemplateRef"));
+    }
+
+    String sqlSessionFactoryRef = annoAttrs.getString("sqlSessionFactoryRef");
+    if (StringUtils.hasText(sqlSessionFactoryRef)) {
+      builder.addPropertyValue("sqlSessionFactoryBeanName", annoAttrs.getString("sqlSessionFactoryRef"));
+    }
+
+    List<String> basePackages = new ArrayList<>();
+    basePackages.addAll(
+        Arrays.stream(annoAttrs.getStringArray("value")).filter(StringUtils::hasText).collect(Collectors.toList()));
+
+    basePackages.addAll(Arrays.stream(annoAttrs.getStringArray("basePackages")).filter(StringUtils::hasText)
+        .collect(Collectors.toList()));
+
+    basePackages.addAll(Arrays.stream(annoAttrs.getClassArray("basePackageClasses")).map(ClassUtils::getPackageName)
+        .collect(Collectors.toList()));
+
+    if (basePackages.isEmpty()) {
+      basePackages.add(getDefaultBasePackage(annoMeta));
+    }
+
+    String lazyInitialization = annoAttrs.getString("lazyInitialization");
+    if (StringUtils.hasText(lazyInitialization)) {
+      builder.addPropertyValue("lazyInitialization", lazyInitialization);
+    }
+
+    String defaultScope = annoAttrs.getString("defaultScope");
+    if (!AbstractBeanDefinition.SCOPE_DEFAULT.equals(defaultScope)) {
+      builder.addPropertyValue("defaultScope", defaultScope);
+    }
+
+    builder.addPropertyValue("basePackage", StringUtils.collectionToCommaDelimitedString(basePackages));
+
+    registry.registerBeanDefinition(beanName, builder.getBeanDefinition());
+
+  }
+
+}
+```
+
+MapperScanRegistrar读取MapperScan注解的中的属性值，并记录起来。
+
+后续在`MapperScanConfigurer`会读取这些属性值，然后去扫描指定的包或类。
+
+`MapperScanConfigurer#postProcessBeanDefinitionRegistry`
+
+```java
+@Override
+public void postProcessBeanDefinitionRegistry(BeanDefinitionRegistry registry) {
+  if (this.processPropertyPlaceHolders) {
+    processPropertyPlaceHolders();
+  }
+
+  // 设置属性值
+  ClassPathMapperScanner scanner = new ClassPathMapperScanner(registry);
+  scanner.setAddToConfig(this.addToConfig);
+  scanner.setAnnotationClass(this.annotationClass);
+  scanner.setMarkerInterface(this.markerInterface);
+  scanner.setSqlSessionFactory(this.sqlSessionFactory);
+  scanner.setSqlSessionTemplate(this.sqlSessionTemplate);
+  scanner.setSqlSessionFactoryBeanName(this.sqlSessionFactoryBeanName);
+  scanner.setSqlSessionTemplateBeanName(this.sqlSessionTemplateBeanName);
+  scanner.setResourceLoader(this.applicationContext);
+  scanner.setBeanNameGenerator(this.nameGenerator);
+  scanner.setMapperFactoryBeanClass(this.mapperFactoryBeanClass);
+  if (StringUtils.hasText(lazyInitialization)) {
+    scanner.setLazyInitialization(Boolean.valueOf(lazyInitialization));
+  }
+  if (StringUtils.hasText(defaultScope)) {
+    scanner.setDefaultScope(defaultScope);
+  }
+  scanner.registerFilters();
+  // 扫描指定的package
+  scanner.scan(
+      StringUtils.tokenizeToStringArray(this.basePackage, ConfigurableApplicationContext.CONFIG_LOCATION_DELIMITERS));
+}
+```
+
+在实际开发中，我们也可以使用这种方法，来自定义注解，去扫描指定的包。
+
+
+
+### Spring循环依赖
+
+---
 
 
 
